@@ -1,0 +1,4 @@
+{
+  "denominations": ["k", "10k", "100k", "mn", "10mn", "100mn", "bn", "10bn", "100bn", "unit"],
+  "units": ["USD", "RMB", "JPY", "GBP", "EUR", "%", "count", "none"]
+}

@@ -1,0 +1,30 @@
+# PMS (Poony Multiretrieval System) S1
+# ────────────────────────────────────
+
+# LlamaIndex core — document loading, node parsing, indexing
+llama-index>=0.10.0
+llama-index-embeddings-huggingface
+llama-index-retrievers-bm25        # transitive dep: rank_bm25 (used directly by PTO)
+
+# Document parsing
+PyMuPDF>=1.23.0                    # PDF text + table extraction (ingest.py)
+
+# LLM clients
+openai>=1.0.0                      # OpenAI-compatible backend (DeepSeek, etc.)
+anthropic>=0.30.0                  # Anthropic Claude (Sekei, PTO judge)
+google-genai>=1.0.0                # Google Gemini backend
+
+# Config + data
+PyYAML>=6.0.0                      # llm_profiles.yaml, retrievable_line_items.yaml
+
+# Web UI (dormant — gradio_ui.py kept but S1 not wired yet)
+gradio>=4.0.0
+
+# Chart rendering
+LovelyPlots>=0.0.26                # matplotlib style sheets (stencil2chart.py)
+
+# Utilities
+python-dotenv>=1.0.0               # .env file loading
+
+# Embedding model (auto-downloaded by HuggingFace on first use)
+sentence-transformers>=2.0.0

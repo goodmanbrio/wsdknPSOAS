@@ -1,0 +1,285 @@
+# retrievable_line_items.yaml
+# Reference for Sekei LLM: which financial metrics are directly retrievable
+# from 10-K filings vs. which require computation from components.
+#
+# "retrieve" = appears as a labeled row in standard financial statements.
+# "compute"  = derived from other line items; Sekei must emit formula.
+#
+# Sekei injects this list to decide cell types (retrieve vs compute)
+# and batching (items on the same statement can share a retrieval call).
+
+statements:
+
+  income_statement:
+    aliases: ["Consolidated Statements of Earnings", "Consolidated Statements of Income",
+              "Consolidated Statements of Operations", "P&L", "Income Statement",
+              "Statement of Income", "Statement of Operations", "Statement of Earnings",
+              "Statements of Earnings", "Statements of Income", "Statements of Operations"]
+    line_items:
+      # Top-line
+      - name: Revenue
+        aliases: [Net sales, Net revenue, Total revenue, Total net sales]
+        type: retrieve
+        unit: $M
+      - name: Cost of sales
+        aliases: [Cost of goods sold, COGS, Cost of products sold]
+        type: retrieve
+        unit: $M
+      - name: Gross profit
+        aliases: [Gross margin amount]
+        type: retrieve
+        unit: $M
+        note: "Usually reported directly. If missing, = Revenue - Cost of sales"
+      # Operating expenses
+      - name: SG&A
+        aliases: [Selling general and administrative expenses, Selling general and administrative]
+        type: retrieve
+        unit: $M
+      - name: R&D expenses
+        aliases: [Research and development expenses, Research and development]
+        type: retrieve
+        unit: $M
+        note: "Not all companies report this separately"
+      - name: Restructuring charges
+        aliases: [Restructuring impairment and other related activities]
+        type: retrieve
+        unit: $M
+      # Operating income
+      - name: Operating income
+        aliases: [Operating profit, Income from operations]
+        type: retrieve
+        unit: $M
+      # Below the line
+      - name: Interest expense
+        aliases: [Interest expense net]
+        type: retrieve
+        unit: $M
+      - name: Interest income
+        aliases: [Investment income, Investment income and other]
+        type: retrieve
+        unit: $M
+      - name: Income before tax
+        aliases: [Earnings before income tax expense, Income before income taxes,
+                  Earnings before income tax expense and equity in income of affiliates]
+        type: retrieve
+        unit: $M
+      - name: Income tax expense
+        aliases: [Provision for income taxes]
+        type: retrieve
+        unit: $M
+      - name: Net income
+        aliases: [Net earnings, Net income attributable to parent]
+        type: retrieve
+        unit: $M
+      # Per-share data (on same statement but EPS sometimes needs computation)
+      - name: Basic EPS
+        aliases: [Basic earnings per share]
+        type: retrieve
+        unit: $/share
+        note: "Usually reported. If missing, = Net income / Basic shares outstanding"
+      - name: Diluted EPS
+        aliases: [Diluted earnings per share]
+        type: retrieve
+        unit: $/share
+        note: "Usually reported. If missing, = Net income / Diluted shares outstanding"
+      - name: Basic shares outstanding
+        aliases: [Weighted-average common shares outstanding Basic,
+                  Weighted average number of shares]
+        type: retrieve
+        unit: millions
+      - name: Diluted shares outstanding
+        aliases: [Weighted-average common shares outstanding Diluted]
+        type: retrieve
+        unit: millions
+
+  balance_sheet:
+    aliases: ["Consolidated Balance Sheets", "Consolidated Balance Sheet",
+              "Balance Sheet", "Balance Sheets", "Statement of Financial Position",
+              "Statements of Financial Position"]
+    line_items:
+      - name: Cash and cash equivalents
+        aliases: [Cash, Cash and short-term investments]
+        type: retrieve
+        unit: $M
+      - name: Total current assets
+        type: retrieve
+        unit: $M
+      - name: Total assets
+        type: retrieve
+        unit: $M
+      - name: Total current liabilities
+        type: retrieve
+        unit: $M
+      - name: Long-term debt
+        aliases: [Long-term borrowings]
+        type: retrieve
+        unit: $M
+      - name: Total debt
+        type: compute
+        formula: "current_portion_of_LTD + long_term_debt"
+        note: "Rarely reported as a single line; sum current + non-current portions"
+      - name: Total liabilities
+        type: retrieve
+        unit: $M
+      - name: Total equity
+        aliases: [Total shareholders equity, Total stockholders equity]
+        type: retrieve
+        unit: $M
+      - name: Goodwill
+        type: retrieve
+        unit: $M
+      - name: Inventories
+        aliases: [Merchandise inventories, Inventories net]
+        type: retrieve
+        unit: $M
+      - name: Accounts payable
+        aliases: [Trade payables]
+        type: retrieve
+        unit: $M
+      - name: Receivables
+        aliases: [Trade receivables, Accounts receivable, Receivables net]
+        type: retrieve
+        unit: $M
+
+  cash_flow_statement:
+    aliases: ["Consolidated Statements of Cash Flows", "Consolidated Statement of Cash Flows",
+              "Statement of Cash Flows", "Statements of Cash Flows", "Cash Flow Statement"]
+    line_items:
+      - name: Net cash from operations
+        aliases: [Total cash provided by operating activities, Net cash provided by operating activities,
+                  Cash provided by operating activities]
+        type: retrieve
+        unit: $M
+      - name: Capital expenditures
+        aliases: [Additions to property and equipment, Purchase of property plant and equipment,
+                  Purchases of property and equipment]
+        type: retrieve
+        unit: $M
+        note: "Reported as negative in cash flow; absolute value is the capex figure"
+      - name: Net cash from investing
+        aliases: [Total cash used in investing activities, Net cash used in investing activities]
+        type: retrieve
+        unit: $M
+      - name: Net cash from financing
+        aliases: [Total cash used in financing activities, Net cash used in financing activities]
+        type: retrieve
+        unit: $M
+      - name: Dividends paid
+        type: retrieve
+        unit: $M
+      - name: Share repurchases
+        aliases: [Repurchase of common stock, Share buyback/cancellations,
+                  Purchase of treasury shares]
+        type: retrieve
+        unit: $M
+
+# ═══════════════════════════════════════════════════════════════
+# Computed metrics — NOT on financial statements, require formula
+# ═══════════════════════════════════════════════════════════════
+
+computed_metrics:
+  - name: Gross margin
+    aliases: [Gross profit margin, Gross margin %]
+    formula: "gross_profit / revenue"
+    components: [Gross profit, Revenue]
+    statement: income_statement
+    result_format: percentage
+
+  - name: Operating margin
+    aliases: [Operating profit margin, Operating margin %]
+    formula: "operating_income / revenue"
+    components: [Operating income, Revenue]
+    statement: income_statement
+    result_format: percentage
+
+  - name: Net profit margin
+    aliases: [Net margin, Net income margin, Profit margin]
+    formula: "net_income / revenue"
+    components: [Net income, Revenue]
+    statement: income_statement
+    result_format: percentage
+
+  - name: Effective tax rate
+    formula: "income_tax_expense / income_before_tax"
+    components: [Income tax expense, Income before tax]
+    statement: income_statement
+    result_format: percentage
+
+  - name: Revenue growth
+    aliases: [Sales growth, Top-line growth, YoY revenue growth]
+    formula: "(revenue_current - revenue_prior) / revenue_prior"
+    components: [Revenue]
+    note: "Requires same metric from two periods"
+    result_format: percentage
+
+  - name: EPS growth
+    formula: "(eps_current - eps_prior) / eps_prior"
+    components: [Basic EPS]
+    note: "Requires same metric from two periods"
+    result_format: percentage
+
+  - name: Return on equity
+    aliases: [ROE]
+    formula: "net_income / total_equity"
+    components: [Net income, Total equity]
+    cross_statement: true
+    result_format: percentage
+
+  - name: Return on assets
+    aliases: [ROA]
+    formula: "net_income / total_assets"
+    components: [Net income, Total assets]
+    cross_statement: true
+    result_format: percentage
+
+  - name: Debt-to-equity ratio
+    aliases: [D/E ratio, Leverage ratio]
+    formula: "total_debt / total_equity"
+    components: [Total debt, Total equity]
+    statement: balance_sheet
+    result_format: ratio
+
+  - name: Current ratio
+    formula: "total_current_assets / total_current_liabilities"
+    components: [Total current assets, Total current liabilities]
+    statement: balance_sheet
+    result_format: ratio
+
+  - name: Free cash flow
+    aliases: [FCF]
+    formula: "net_cash_from_operations - capital_expenditures"
+    components: [Net cash from operations, Capital expenditures]
+    statement: cash_flow_statement
+    result_format: $M
+
+# ═══════════════════════════════════════════════════════════════
+# Batching rules — which line items co-occur on same table
+# ═══════════════════════════════════════════════════════════════
+# Items on the same statement for the same period can share a
+# retrieval call because section expansion pulls sibling content.
+
+batching_guidance:
+  - group: income_statement_core
+    items: [Revenue, Cost of sales, Gross profit, SG&A, Operating income,
+            Net income, Income before tax, Income tax expense]
+    note: "All on same income statement table — batch together per period"
+
+  - group: income_statement_per_share
+    items: [Basic EPS, Diluted EPS, Basic shares outstanding, Diluted shares outstanding]
+    note: "Usually on income statement but sometimes in a separate per-share table.
+           Batch with income_statement_core if same table, otherwise separate."
+
+  - group: balance_sheet_assets
+    items: [Cash and cash equivalents, Total current assets, Total assets,
+            Goodwill, Inventories, Receivables]
+    note: "All on balance sheet — batch together per period"
+
+  - group: balance_sheet_liabilities_equity
+    items: [Total current liabilities, Long-term debt, Total liabilities,
+            Total equity, Accounts payable]
+    note: "Same balance sheet table as assets — can batch with balance_sheet_assets"
+
+  - group: cash_flow
+    items: [Net cash from operations, Capital expenditures, Net cash from investing,
+            Net cash from financing, Dividends paid, Share repurchases]
+    note: "All on cash flow statement — batch together per period"

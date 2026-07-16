@@ -1,0 +1,100 @@
+[
+  {
+    "test_id": "d_bby",
+    "query": "What were Best Buy's gross profit margin and net profit margin for fiscal years 2022 and 2023?",
+    "sekei_output": {
+      "firm": "Best Buy",
+      "metrics": ["Revenue", "Gross profit", "Net income"],
+      "periods": ["FY2022", "FY2023"],
+      "cells": {
+        "A1": {"metric": "Revenue", "period": "FY2022", "type": "retrieve", "statement": "income_statement"},
+        "A2": {"metric": "Gross profit", "period": "FY2022", "type": "retrieve", "statement": "income_statement"},
+        "A3": {"metric": "Gross margin", "period": "FY2022", "type": "compute", "formula": "A2 / A1", "result_format": "percentage"},
+        "A4": {"metric": "Net income", "period": "FY2022", "type": "retrieve", "statement": "income_statement"},
+        "A5": {"metric": "Net profit margin", "period": "FY2022", "type": "compute", "formula": "A4 / A1", "result_format": "percentage"},
+        "B1": {"metric": "Revenue", "period": "FY2023", "type": "retrieve", "statement": "income_statement"},
+        "B2": {"metric": "Gross profit", "period": "FY2023", "type": "retrieve", "statement": "income_statement"},
+        "B3": {"metric": "Gross margin", "period": "FY2023", "type": "compute", "formula": "B2 / B1", "result_format": "percentage"},
+        "B4": {"metric": "Net income", "period": "FY2023", "type": "retrieve", "statement": "income_statement"},
+        "B5": {"metric": "Net profit margin", "period": "FY2023", "type": "compute", "formula": "B4 / B1", "result_format": "percentage"}
+      },
+      "batches": [
+        {
+          "id": "A_124",
+          "cells": ["A1", "A2", "A4"],
+          "period": "FY2022",
+          "statement": "income_statement",
+          "retrieve_target": "Consolidated Statements of Earnings"
+        },
+        {
+          "id": "B_124",
+          "cells": ["B1", "B2", "B4"],
+          "period": "FY2023",
+          "statement": "income_statement",
+          "retrieve_target": "Consolidated Statements of Earnings"
+        }
+      ]
+    },
+    "ground_truth": {
+      "A1": {"value": 51761, "unit": "$M"},
+      "B1": {"value": 46298, "unit": "$M"},
+      "A2": {"value": 11640, "unit": "$M"},
+      "B2": {"value": 9912, "unit": "$M"},
+      "A4": {"value": 2454, "unit": "$M"},
+      "B4": {"value": 1419, "unit": "$M"},
+      "A3": {"value": 0.2249, "display": "22.49%"},
+      "A5": {"value": 0.0474, "display": "4.74%"},
+      "B3": {"value": 0.2141, "display": "21.41%"},
+      "B5": {"value": 0.0306, "display": "3.06%"}
+    }
+  },
+  {
+    "test_id": "d_amcor",
+    "query": "What were Amcor's gross profit margin and net profit margin for fiscal years 2022 and 2023?",
+    "sekei_output": {
+      "firm": "Amcor",
+      "metrics": ["Revenue", "Gross profit", "Net income"],
+      "periods": ["FY2022", "FY2023"],
+      "cells": {
+        "A1": {"metric": "Revenue", "period": "FY2022", "type": "retrieve", "statement": "income_statement"},
+        "A2": {"metric": "Gross profit", "period": "FY2022", "type": "retrieve", "statement": "income_statement"},
+        "A3": {"metric": "Gross margin", "period": "FY2022", "type": "compute", "formula": "A2 / A1", "result_format": "percentage"},
+        "A4": {"metric": "Net income", "period": "FY2022", "type": "retrieve", "statement": "income_statement"},
+        "A5": {"metric": "Net profit margin", "period": "FY2022", "type": "compute", "formula": "A4 / A1", "result_format": "percentage"},
+        "B1": {"metric": "Revenue", "period": "FY2023", "type": "retrieve", "statement": "income_statement"},
+        "B2": {"metric": "Gross profit", "period": "FY2023", "type": "retrieve", "statement": "income_statement"},
+        "B3": {"metric": "Gross margin", "period": "FY2023", "type": "compute", "formula": "B2 / B1", "result_format": "percentage"},
+        "B4": {"metric": "Net income", "period": "FY2023", "type": "retrieve", "statement": "income_statement"},
+        "B5": {"metric": "Net profit margin", "period": "FY2023", "type": "compute", "formula": "B4 / B1", "result_format": "percentage"}
+      },
+      "batches": [
+        {
+          "id": "A_124",
+          "cells": ["A1", "A2", "A4"],
+          "period": "FY2022",
+          "statement": "income_statement",
+          "retrieve_target": "Consolidated Statements of Income"
+        },
+        {
+          "id": "B_124",
+          "cells": ["B1", "B2", "B4"],
+          "period": "FY2023",
+          "statement": "income_statement",
+          "retrieve_target": "Consolidated Statements of Income"
+        }
+      ]
+    },
+    "ground_truth": {
+      "A1": {"value": 14544, "unit": "$M"},
+      "B1": {"value": 14694, "unit": "$M"},
+      "A2": {"value": 2820, "unit": "$M"},
+      "B2": {"value": 2725, "unit": "$M"},
+      "A4": {"value": 805, "unit": "$M"},
+      "B4": {"value": 1048, "unit": "$M"},
+      "A3": {"value": 0.1939, "display": "19.39%"},
+      "A5": {"value": 0.0554, "display": "5.54%"},
+      "B3": {"value": 0.1854, "display": "18.54%"},
+      "B5": {"value": 0.0713, "display": "7.13%"}
+    }
+  }
+]

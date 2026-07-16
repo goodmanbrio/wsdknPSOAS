@@ -1,0 +1,14 @@
+# Binary/large data
+src/scripts/Poony_Multiretrieval_S1/data/
+src/scripts/Poony_Multiretrieval_S1/index/
+src/scripts/Poony_Multiretrieval_S1/output/
+
+# Sessions (generated at runtime)
+temp/
+
+# Python
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store

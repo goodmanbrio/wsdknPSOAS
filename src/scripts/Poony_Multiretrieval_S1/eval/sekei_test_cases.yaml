@@ -1,0 +1,453 @@
+# sekei_test_cases.yaml
+# Ground-truth test cases for Sekei (設計) LLM call validation.
+# 5 categories × 2 companies = 10 test cases.
+# Cell naming: letter = period column, number = metric row.
+#
+# Purpose: run Sekei on each query, compare its output stencil/batches
+# against expected structure. Ground truth values verify downstream too.
+
+# ═══════════════════════════════════════════════════════════════
+# CATEGORY A: 3 metrics × 3 years (standard stencil + batching)
+# ═══════════════════════════════════════════════════════════════
+
+- id: a_bby
+  category: a
+  company: Best Buy
+  ticker: BBY
+  query: >
+    What were Best Buy's revenue, operating income, and diluted EPS
+    for fiscal years 2021, 2022, and 2023?
+  expected_stencil:
+    metrics: [Revenue, Operating Income, Diluted EPS]
+    periods: [FY2021, FY2022, FY2023]
+    cells:
+      A1: {metric: Revenue, period: FY2021}
+      B1: {metric: Revenue, period: FY2022}
+      C1: {metric: Revenue, period: FY2023}
+      A2: {metric: Operating Income, period: FY2021}
+      B2: {metric: Operating Income, period: FY2022}
+      C2: {metric: Operating Income, period: FY2023}
+      A3: {metric: Diluted EPS, period: FY2021}
+      B3: {metric: Diluted EPS, period: FY2022}
+      C3: {metric: Diluted EPS, period: FY2023}
+  expected_batches:
+    # Rev + OI on same income statement; EPS sometimes separate table
+    - id: A_12
+      cells: [A1, A2]
+      period: FY2021
+      statement: income_statement
+    - id: B_12
+      cells: [B1, B2]
+      period: FY2022
+      statement: income_statement
+    - id: C_12
+      cells: [C1, C2]
+      period: FY2023
+      statement: income_statement
+    - id: A_3
+      cells: [A3]
+      period: FY2021
+      statement: income_statement
+    - id: B_3
+      cells: [B3]
+      period: FY2022
+      statement: income_statement
+    - id: C_3
+      cells: [C3]
+      period: FY2023
+      statement: income_statement
+  ground_truth:
+    A1: {value: 47262, unit: $M, source: BESTBUY_2023_10K.md}
+    B1: {value: 51761, unit: $M, source: BESTBUY_2023_10K.md}
+    C1: {value: 46298, unit: $M, source: BESTBUY_2023_10K.md}
+    A2: {value: 2391, unit: $M, source: BESTBUY_2023_10K.md}
+    B2: {value: 3039, unit: $M, source: BESTBUY_2023_10K.md}
+    C2: {value: 1795, unit: $M, source: BESTBUY_2023_10K.md}
+    A3: {value: 6.84, unit: $/share, source: BESTBUY_2023_10K.md}
+    B3: {value: 9.84, unit: $/share, source: BESTBUY_2023_10K.md}
+    C3: {value: 6.29, unit: $/share, source: BESTBUY_2023_10K.md}
+  notes: >
+    BBY FY ends late Jan. FY2023=ended Jan 28 2023, FY2022=Jan 29 2022,
+    FY2021=Jan 30 2021. All three years on BESTBUY_2023_10K income stmt.
+    Acceptable if Sekei also batches EPS with Rev+OI (all on same table).
+
+- id: a_amcor
+  category: a
+  company: Amcor
+  ticker: AMCR
+  query: >
+    What were Amcor's net sales, operating income, and diluted EPS
+    for fiscal years 2021, 2022, and 2023?
+  expected_stencil:
+    metrics: [Net Sales, Operating Income, Diluted EPS]
+    periods: [FY2021, FY2022, FY2023]
+    cells:
+      A1: {metric: Net Sales, period: FY2021}
+      B1: {metric: Net Sales, period: FY2022}
+      C1: {metric: Net Sales, period: FY2023}
+      A2: {metric: Operating Income, period: FY2021}
+      B2: {metric: Operating Income, period: FY2022}
+      C2: {metric: Operating Income, period: FY2023}
+      A3: {metric: Diluted EPS, period: FY2021}
+      B3: {metric: Diluted EPS, period: FY2022}
+      C3: {metric: Diluted EPS, period: FY2023}
+  expected_batches:
+    - id: A_12
+      cells: [A1, A2]
+      period: FY2021
+      statement: income_statement
+    - id: B_12
+      cells: [B1, B2]
+      period: FY2022
+      statement: income_statement
+    - id: C_12
+      cells: [C1, C2]
+      period: FY2023
+      statement: income_statement
+    - id: A_3
+      cells: [A3]
+      period: FY2021
+      statement: income_statement
+    - id: B_3
+      cells: [B3]
+      period: FY2022
+      statement: income_statement
+    - id: C_3
+      cells: [C3]
+      period: FY2023
+      statement: income_statement
+  ground_truth:
+    A1: {value: 12861, unit: $M, source: AMCOR_2023_10K.md}
+    B1: {value: 14544, unit: $M, source: AMCOR_2023_10K.md}
+    C1: {value: 14694, unit: $M, source: AMCOR_2023_10K.md}
+    A2: {value: 1321, unit: $M, source: AMCOR_2023_10K.md}
+    B2: {value: 1239, unit: $M, source: AMCOR_2023_10K.md}
+    C2: {value: 1508, unit: $M, source: AMCOR_2023_10K.md}
+    A3: {value: 0.602, unit: $/share, source: AMCOR_2023_10K.md}
+    B3: {value: 0.529, unit: $/share, source: AMCOR_2023_10K.md}
+    C3: {value: 0.705, unit: $/share, source: AMCOR_2023_10K.md}
+  notes: >
+    Amcor FY ends Jun 30. All 3 years on AMCOR_2023_10K income stmt.
+    NI "attributable to Amcor plc" is the relevant figure, not total NI.
+
+# ═══════════════════════════════════════════════════════════════
+# CATEGORY B: 1 metric × 5 years (no batching possible)
+# ═══════════════════════════════════════════════════════════════
+
+- id: b_bby
+  category: b
+  company: Best Buy
+  ticker: BBY
+  query: >
+    What was Best Buy's total revenue for each fiscal year
+    from FY2015 through FY2019?
+  expected_stencil:
+    metrics: [Revenue]
+    periods: [FY2015, FY2016, FY2017, FY2018, FY2019]
+    cells:
+      A1: {metric: Revenue, period: FY2015}
+      B1: {metric: Revenue, period: FY2016}
+      C1: {metric: Revenue, period: FY2017}
+      D1: {metric: Revenue, period: FY2018}
+      E1: {metric: Revenue, period: FY2019}
+  expected_batches:
+    # Single metric per period = no batching benefit, 5 solo retrievals
+    - {id: A_1, cells: [A1], period: FY2015, statement: income_statement}
+    - {id: B_1, cells: [B1], period: FY2016, statement: income_statement}
+    - {id: C_1, cells: [C1], period: FY2017, statement: income_statement}
+    - {id: D_1, cells: [D1], period: FY2018, statement: income_statement}
+    - {id: E_1, cells: [E1], period: FY2019, statement: income_statement}
+  ground_truth:
+    # From BESTBUY_2019_10K.md 5-year selected financial data
+    A1: {value: 40339, unit: $M, source: BESTBUY_2017_10K.md}
+    B1: {value: 39528, unit: $M, source: BESTBUY_2017_10K.md}
+    C1: {value: 39403, unit: $M, source: BESTBUY_2019_10K.md}
+    D1: {value: 42151, unit: $M, source: BESTBUY_2019_10K.md}
+    E1: {value: 42879, unit: $M, source: BESTBUY_2021_10K.md}
+  notes: >
+    Tests degenerate case — single metric means no batching.
+    Data spans 3 different 10-K files (each covers ~3 years).
+    FY2015 ended Jan 31 2015, FY2019 ended Feb 2 2019.
+
+- id: b_amcor
+  category: b
+  company: Amcor
+  ticker: AMCR
+  query: >
+    What were Amcor's annual net sales for each fiscal year
+    from FY2019 through FY2023?
+  expected_stencil:
+    metrics: [Net Sales]
+    periods: [FY2019, FY2020, FY2021, FY2022, FY2023]
+    cells:
+      A1: {metric: Net Sales, period: FY2019}
+      B1: {metric: Net Sales, period: FY2020}
+      C1: {metric: Net Sales, period: FY2021}
+      D1: {metric: Net Sales, period: FY2022}
+      E1: {metric: Net Sales, period: FY2023}
+  expected_batches:
+    - {id: A_1, cells: [A1], period: FY2019, statement: income_statement}
+    - {id: B_1, cells: [B1], period: FY2020, statement: income_statement}
+    - {id: C_1, cells: [C1], period: FY2021, statement: income_statement}
+    - {id: D_1, cells: [D1], period: FY2022, statement: income_statement}
+    - {id: E_1, cells: [E1], period: FY2023, statement: income_statement}
+  ground_truth:
+    A1: {value: 9458, unit: $M, source: AMCOR_2021_10K.md}
+    B1: {value: 12468, unit: $M, source: AMCOR_2021_10K.md}
+    C1: {value: 12861, unit: $M, source: AMCOR_2023_10K.md}
+    D1: {value: 14544, unit: $M, source: AMCOR_2023_10K.md}
+    E1: {value: 14694, unit: $M, source: AMCOR_2023_10K.md}
+  notes: >
+    FY2019 was first year post-Bemis merger (Jun 2019), only ~1 month
+    combined ops. Jump from ~$9.5B to ~$12.5B reflects full-year Bemis.
+    Data spans multiple 10-K files.
+
+# ═══════════════════════════════════════════════════════════════
+# CATEGORY C: 6 metrics × 1 year (max batching)
+# ═══════════════════════════════════════════════════════════════
+
+- id: c_bby
+  category: c
+  company: Best Buy
+  ticker: BBY
+  query: >
+    For Best Buy's fiscal year 2023, what were the revenue, cost of
+    sales, gross profit, operating income, net earnings, and diluted EPS?
+  expected_stencil:
+    metrics: [Revenue, Cost of Sales, Gross Profit, Operating Income,
+              Net Earnings, Diluted EPS]
+    periods: [FY2023]
+    cells:
+      A1: {metric: Revenue, period: FY2023}
+      A2: {metric: Cost of Sales, period: FY2023}
+      A3: {metric: Gross Profit, period: FY2023}
+      A4: {metric: Operating Income, period: FY2023}
+      A5: {metric: Net Earnings, period: FY2023}
+      A6: {metric: Diluted EPS, period: FY2023}
+  expected_batches:
+    # All 6 on the same income statement — single retrieval call
+    - id: A_123456
+      cells: [A1, A2, A3, A4, A5, A6]
+      period: FY2023
+      statement: income_statement
+  ground_truth:
+    A1: {value: 46298, unit: $M, source: BESTBUY_2023_10K.md}
+    A2: {value: 36386, unit: $M, source: BESTBUY_2023_10K.md}
+    A3: {value: 9912, unit: $M, source: BESTBUY_2023_10K.md}
+    A4: {value: 1795, unit: $M, source: BESTBUY_2023_10K.md}
+    A5: {value: 1419, unit: $M, source: BESTBUY_2023_10K.md}
+    A6: {value: 6.29, unit: $/share, source: BESTBUY_2023_10K.md}
+  notes: >
+    Max batching test — all metrics from one statement, one period.
+    Ideal: Sekei batches everything into 1 retrieval call.
+    Acceptable: 2 batches (core + EPS) if Sekei is conservative.
+
+- id: c_amcor
+  category: c
+  company: Amcor
+  ticker: AMCR
+  query: >
+    For Amcor's fiscal year 2023, what were the net sales, cost of
+    sales, gross profit, operating income, net income attributable to
+    Amcor, and diluted EPS?
+  expected_stencil:
+    metrics: [Net Sales, Cost of Sales, Gross Profit, Operating Income,
+              Net Income, Diluted EPS]
+    periods: [FY2023]
+    cells:
+      A1: {metric: Net Sales, period: FY2023}
+      A2: {metric: Cost of Sales, period: FY2023}
+      A3: {metric: Gross Profit, period: FY2023}
+      A4: {metric: Operating Income, period: FY2023}
+      A5: {metric: Net Income, period: FY2023}
+      A6: {metric: Diluted EPS, period: FY2023}
+  expected_batches:
+    - id: A_123456
+      cells: [A1, A2, A3, A4, A5, A6]
+      period: FY2023
+      statement: income_statement
+  ground_truth:
+    A1: {value: 14694, unit: $M, source: AMCOR_2023_10K.md}
+    A2: {value: 11969, unit: $M, source: AMCOR_2023_10K.md}
+    A3: {value: 2725, unit: $M, source: AMCOR_2023_10K.md}
+    A4: {value: 1508, unit: $M, source: AMCOR_2023_10K.md}
+    A5: {value: 1048, unit: $M, source: AMCOR_2023_10K.md}
+    A6: {value: 0.705, unit: $/share, source: AMCOR_2023_10K.md}
+  notes: >
+    Amcor reports COGS as negative; ground truth is absolute value.
+    Net income = "attributable to Amcor plc" ($1,048), not total ($1,058).
+
+# ═══════════════════════════════════════════════════════════════
+# CATEGORY D: derived metrics (Sekei must decompose + emit formulas)
+# ═══════════════════════════════════════════════════════════════
+
+- id: d_bby
+  category: d
+  company: Best Buy
+  ticker: BBY
+  query: >
+    What were Best Buy's gross profit margin and net profit margin
+    for fiscal years 2022 and 2023?
+  expected_stencil:
+    metrics: [Gross Profit, Revenue, Net Earnings]
+    periods: [FY2022, FY2023]
+    # Raw cells (type: retrieve)
+    cells:
+      A1: {metric: Revenue, period: FY2022, type: retrieve}
+      B1: {metric: Revenue, period: FY2023, type: retrieve}
+      A2: {metric: Gross Profit, period: FY2022, type: retrieve}
+      B2: {metric: Gross Profit, period: FY2023, type: retrieve}
+      A3: {metric: Net Earnings, period: FY2022, type: retrieve}
+      B3: {metric: Net Earnings, period: FY2023, type: retrieve}
+    # Computed cells (type: compute)
+    computed:
+      gross_margin_FY2022: {formula: "A2 / A1", label: "Gross Margin FY2022"}
+      gross_margin_FY2023: {formula: "B2 / B1", label: "Gross Margin FY2023"}
+      net_margin_FY2022: {formula: "A3 / A1", label: "Net Margin FY2022"}
+      net_margin_FY2023: {formula: "B3 / B1", label: "Net Margin FY2023"}
+  expected_batches:
+    # All components on income statement — batch per period
+    - id: A_123
+      cells: [A1, A2, A3]
+      period: FY2022
+      statement: income_statement
+    - id: B_123
+      cells: [B1, B2, B3]
+      period: FY2023
+      statement: income_statement
+  ground_truth:
+    A1: {value: 51761, unit: $M, source: BESTBUY_2023_10K.md}
+    B1: {value: 46298, unit: $M, source: BESTBUY_2023_10K.md}
+    A2: {value: 11640, unit: $M, source: BESTBUY_2023_10K.md}
+    B2: {value: 9912, unit: $M, source: BESTBUY_2023_10K.md}
+    A3: {value: 2454, unit: $M, source: BESTBUY_2023_10K.md}
+    B3: {value: 1419, unit: $M, source: BESTBUY_2023_10K.md}
+    # Computed ground truth
+    gross_margin_FY2022: {value: 0.2249, display: "22.49%"}
+    gross_margin_FY2023: {value: 0.2141, display: "21.41%"}
+    net_margin_FY2022: {value: 0.0474, display: "4.74%"}
+    net_margin_FY2023: {value: 0.0306, display: "3.06%"}
+  notes: >
+    Key test: Sekei must NOT try to retrieve "gross margin" directly.
+    Must decompose into components (Revenue, Gross Profit, Net Earnings)
+    and emit formulas for the derived metrics. Python evals the math.
+
+- id: d_amcor
+  category: d
+  company: Amcor
+  ticker: AMCR
+  query: >
+    What were Amcor's gross profit margin and net profit margin
+    for fiscal years 2022 and 2023?
+  expected_stencil:
+    metrics: [Net Sales, Gross Profit, Net Income]
+    periods: [FY2022, FY2023]
+    cells:
+      A1: {metric: Net Sales, period: FY2022, type: retrieve}
+      B1: {metric: Net Sales, period: FY2023, type: retrieve}
+      A2: {metric: Gross Profit, period: FY2022, type: retrieve}
+      B2: {metric: Gross Profit, period: FY2023, type: retrieve}
+      A3: {metric: Net Income, period: FY2022, type: retrieve}
+      B3: {metric: Net Income, period: FY2023, type: retrieve}
+    computed:
+      gross_margin_FY2022: {formula: "A2 / A1", label: "Gross Margin FY2022"}
+      gross_margin_FY2023: {formula: "B2 / B1", label: "Gross Margin FY2023"}
+      net_margin_FY2022: {formula: "A3 / A1", label: "Net Margin FY2022"}
+      net_margin_FY2023: {formula: "B3 / B1", label: "Net Margin FY2023"}
+  expected_batches:
+    - id: A_123
+      cells: [A1, A2, A3]
+      period: FY2022
+      statement: income_statement
+    - id: B_123
+      cells: [B1, B2, B3]
+      period: FY2023
+      statement: income_statement
+  ground_truth:
+    A1: {value: 14544, unit: $M, source: AMCOR_2023_10K.md}
+    B1: {value: 14694, unit: $M, source: AMCOR_2023_10K.md}
+    A2: {value: 2820, unit: $M, source: AMCOR_2023_10K.md}
+    B2: {value: 2725, unit: $M, source: AMCOR_2023_10K.md}
+    A3: {value: 805, unit: $M, source: AMCOR_2023_10K.md}
+    B3: {value: 1048, unit: $M, source: AMCOR_2023_10K.md}
+    gross_margin_FY2022: {value: 0.1939, display: "19.39%"}
+    gross_margin_FY2023: {value: 0.1854, display: "18.54%"}
+    net_margin_FY2022: {value: 0.0554, display: "5.54%"}
+    net_margin_FY2023: {value: 0.0713, display: "7.13%"}
+  notes: >
+    Amcor NI = "attributable to Amcor plc" ($805/$1,048), not total.
+
+# ═══════════════════════════════════════════════════════════════
+# CATEGORY E: cross-statement metrics (no batching — diff statements)
+# ═══════════════════════════════════════════════════════════════
+
+- id: e_bby
+  category: e
+  company: Best Buy
+  ticker: BBY
+  query: >
+    For Best Buy's fiscal years 2022 and 2023, what were the total
+    revenue, total assets, and net cash provided by operating activities?
+  expected_stencil:
+    metrics: [Revenue, Total Assets, Net Cash from Operations]
+    periods: [FY2022, FY2023]
+    cells:
+      A1: {metric: Revenue, period: FY2022}
+      B1: {metric: Revenue, period: FY2023}
+      A2: {metric: Total Assets, period: FY2022}
+      B2: {metric: Total Assets, period: FY2023}
+      A3: {metric: Net Cash from Operations, period: FY2022}
+      B3: {metric: Net Cash from Operations, period: FY2023}
+  expected_batches:
+    # Each metric from a different statement — no batching
+    - {id: A_1, cells: [A1], period: FY2022, statement: income_statement}
+    - {id: B_1, cells: [B1], period: FY2023, statement: income_statement}
+    - {id: A_2, cells: [A2], period: FY2022, statement: balance_sheet}
+    - {id: B_2, cells: [B2], period: FY2023, statement: balance_sheet}
+    - {id: A_3, cells: [A3], period: FY2022, statement: cash_flow_statement}
+    - {id: B_3, cells: [B3], period: FY2023, statement: cash_flow_statement}
+  ground_truth:
+    A1: {value: 51761, unit: $M, source: BESTBUY_2023_10K.md}
+    B1: {value: 46298, unit: $M, source: BESTBUY_2023_10K.md}
+    A2: {value: 17504, unit: $M, source: BESTBUY_2023_10K.md}
+    B2: {value: 15803, unit: $M, source: BESTBUY_2023_10K.md}
+    A3: {value: 3252, unit: $M, source: BESTBUY_2023_10K.md}
+    B3: {value: 1824, unit: $M, source: BESTBUY_2023_10K.md}
+  notes: >
+    Tests no-batch case: 3 different financial statements. Sekei should
+    NOT batch Revenue with Total Assets or OCF. 6 separate retrieval calls.
+    Balance sheet is point-in-time (as of FY-end), income/CF are for period.
+
+- id: e_amcor
+  category: e
+  company: Amcor
+  ticker: AMCR
+  query: >
+    For Amcor's fiscal years 2022 and 2023, what were the net sales,
+    total assets, and net cash provided by operating activities?
+  expected_stencil:
+    metrics: [Net Sales, Total Assets, Net Cash from Operations]
+    periods: [FY2022, FY2023]
+    cells:
+      A1: {metric: Net Sales, period: FY2022}
+      B1: {metric: Net Sales, period: FY2023}
+      A2: {metric: Total Assets, period: FY2022}
+      B2: {metric: Total Assets, period: FY2023}
+      A3: {metric: Net Cash from Operations, period: FY2022}
+      B3: {metric: Net Cash from Operations, period: FY2023}
+  expected_batches:
+    - {id: A_1, cells: [A1], period: FY2022, statement: income_statement}
+    - {id: B_1, cells: [B1], period: FY2023, statement: income_statement}
+    - {id: A_2, cells: [A2], period: FY2022, statement: balance_sheet}
+    - {id: B_2, cells: [B2], period: FY2023, statement: balance_sheet}
+    - {id: A_3, cells: [A3], period: FY2022, statement: cash_flow_statement}
+    - {id: B_3, cells: [B3], period: FY2023, statement: cash_flow_statement}
+  ground_truth:
+    A1: {value: 14544, unit: $M, source: AMCOR_2023_10K.md}
+    B1: {value: 14694, unit: $M, source: AMCOR_2023_10K.md}
+    A2: {value: 17426, unit: $M, source: AMCOR_2023_10K.md}
+    B2: {value: 17003, unit: $M, source: AMCOR_2023_10K.md}
+    A3: {value: 1526, unit: $M, source: AMCOR_2023_10K.md}
+    B3: {value: 1261, unit: $M, source: AMCOR_2023_10K.md}
+  notes: >
+    All 3 statements available in AMCOR_2023_10K for both years.

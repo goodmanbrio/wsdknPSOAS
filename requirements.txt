@@ -1,0 +1,14 @@
+# ── PSOAS harness ──────────────────────────────────────────
+anthropic>=0.40.0
+rich>=13.0
+
+# ── PMS1 pipeline (existing deps) ─────────────────────────
+pyyaml>=6.0
+openai>=1.0                   # llm.py OpenAI-compat backend
+llama-index-core>=0.11.0
+llama-index-embeddings-huggingface>=0.3.0
+PyMuPDF>=1.24.0               # fitz — PDF parsing in ingest.py
+
+# ── Charting ───────────────────────────────────────────────
+matplotlib>=3.8
+lovelyplots>=0.0.26
