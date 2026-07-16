@@ -104,9 +104,7 @@ class Config:
 # Value = all equivalent strings (tickers, legal names, filename prefixes).
 # To add a company: edit firm_synonyms.json, not this file.
 _FIRM_SYNONYMS_PATH = (
-    Path(__file__).resolve().parent.parent
-    / "hardcode_dependencies"
-    / "firm_synonyms.json"
+    _PMS1_ROOT / "hardcode_dependencies" / "firm_synonyms.json"
 )
 with open(_FIRM_SYNONYMS_PATH) as _f:
     FIRM_SYNONYMS: dict[str, list[str]] = json.load(_f)
