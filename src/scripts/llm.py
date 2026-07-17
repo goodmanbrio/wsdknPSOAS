@@ -93,7 +93,7 @@ class LLMResponse:
     def to_assistant_message(self) -> dict:
         """Build normalized assistant message for appending to messages list."""
         has_structured = self.tool_calls or any(
-            b["type"] in ("thinking", "redacted_thinking")
+            b["type"] in ("thinking", "redacted_thinking", "reasoning")
             for b in self.raw_content
         )
         if has_structured:
@@ -157,21 +157,25 @@ class OpenAICompatibleLLM(LLMBackend):
 
     def __init__(
         self, model: str, api_key: str, base_url: str, temperature: float,
-        max_tokens: int = 4096,
+        max_tokens: int = 4096, thinking: bool = False,
     ):
         self._client = OpenAI(api_key=api_key, base_url=base_url)
         self._model = model
         self._temperature = temperature
         self._max_tokens = max_tokens
+        self._thinking = thinking
 
     def complete(self, prompt: str, system_prompt: str | None = None) -> str:
         messages = self._build_messages(prompt, system_prompt)
-        resp = self._client.chat.completions.create(
-            model=self._model,
-            messages=messages,
-            temperature=self._temperature,
-            stream=False,
-        )
+        kwargs: dict = {
+            "model": self._model,
+            "messages": messages,
+            "temperature": self._temperature,
+            "stream": False,
+        }
+        if self._thinking:
+            kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
+        resp = self._client.chat.completions.create(**kwargs)
         return resp.choices[0].message.content or ""
 
     def stream(self, prompt: str, system_prompt: str | None = None) -> Iterator[str]:
@@ -201,19 +205,35 @@ class OpenAICompatibleLLM(LLMBackend):
 
     # ── Tool calling ─────────────────────────────────────────────────
 
+    _TOOL_TEXT_MAX_RETRIES = 3  # for V4 Pro tool-as-text bug
+
     def call_with_tools(self, messages, system_prompt, tools, max_tokens=None):
         effective_max = max_tokens if max_tokens is not None else self._max_tokens
         api_tools = self._tools_to_openai(tools)
         api_messages = self._messages_to_openai(messages, system_prompt)
 
-        resp = self._client.chat.completions.create(
-            model=self._model,
-            messages=api_messages,
-            tools=api_tools if tools else None,
-            temperature=self._temperature,
-            max_tokens=effective_max,
-        )
-        return self._parse_openai_response(resp)
+        kwargs: dict = {
+            "model": self._model,
+            "messages": api_messages,
+            "tools": api_tools if tools else None,
+            "temperature": self._temperature,
+            "max_tokens": effective_max,
+        }
+        if self._thinking:
+            kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
+
+        # Retry loop: DeepSeek V4 Pro intermittently emits tool calls as
+        # plain text in content instead of structured tool_calls array
+        # (deepseek-ai/DeepSeek-V3#1244). Detect and retry.
+        tool_names = {t["name"] for t in tools} if tools else set()
+        result = None
+        for _attempt in range(self._TOOL_TEXT_MAX_RETRIES):
+            resp = self._client.chat.completions.create(**kwargs)
+            result = self._parse_openai_response(resp)
+            if not (result.stop_reason == "end_turn" and tool_names
+                    and any(name in result.text for name in tool_names)):
+                return result
+        return result  # give up after retries
 
     def _tools_to_openai(self, tools: list[dict]) -> list[dict]:
         return [
@@ -247,6 +267,7 @@ class OpenAICompatibleLLM(LLMBackend):
                 elif isinstance(content, list):
                     text_parts = []
                     tool_calls = []
+                    reasoning = None
                     for block in content:
                         if block["type"] == "text":
                             text_parts.append(block["text"])
@@ -261,12 +282,20 @@ class OpenAICompatibleLLM(LLMBackend):
                                     ),
                                 },
                             })
+                        elif block["type"] == "reasoning":
+                            reasoning = block["reasoning"]
                     oai_msg: dict = {
                         "role": "assistant",
                         "content": "\n".join(text_parts) or None,
                     }
                     if tool_calls:
                         oai_msg["tool_calls"] = tool_calls
+                    # DeepSeek V4: echo reasoning_content for multi-turn.
+                    # Empty string (not null) required on tool-call turns.
+                    if reasoning is not None:
+                        oai_msg["reasoning_content"] = reasoning
+                    elif tool_calls and self._thinking:
+                        oai_msg["reasoning_content"] = ""
                     result.append(oai_msg)
                 else:
                     result.append(msg)
@@ -293,6 +322,13 @@ class OpenAICompatibleLLM(LLMBackend):
         text = message.content or ""
         tool_calls = []
         raw_content = []
+
+        # DeepSeek V4 thinking mode: capture reasoning_content for
+        # multi-turn echo-back. Must be echoed as "" (not null) when
+        # tool_calls are present (deepseek-ai/DeepSeek-V3#1376).
+        reasoning = getattr(message, "reasoning_content", None) or ""
+        if reasoning:
+            raw_content.append({"type": "reasoning", "reasoning": reasoning})
 
         if text:
             raw_content.append({"type": "text", "text": text})
@@ -737,6 +773,7 @@ def _make_llm(profile: dict) -> LLMBackend:
         base_url=base_url,
         temperature=profile.get("temperature", 0.1),
         max_tokens=profile.get("max_tokens", 4096),
+        thinking=profile.get("thinking", False),
     )
 
 
@@ -767,6 +804,11 @@ def get_pto_judge_llm(config: Config) -> LLMBackend:
 
 
 # ── PUMBA factories ──────────────────────────────────────────────────────
+
+def get_pumba_dailo_llm(config: Config) -> LLMBackend:
+    """PUMBA Dailo LLM — agentic file search + extraction (tool calling)."""
+    return _get(config, "pumba_dailo_profile")
+
 
 def get_pumba_gulei_llm(config: Config) -> LLMBackend:
     """PUMBA GuleiPai/GuleiSau LLM — chunk selection and review."""

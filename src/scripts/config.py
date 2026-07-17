@@ -52,17 +52,17 @@ class Config:
     llm_profiles_path: Path = field(
         default_factory=lambda: Path(__file__).parent / "llm_profiles.yaml"
     )
-    sekei_profile: str = "anthropic_opushighthink"
-    pto_hyde_profile: str = "deepseek_chattemp0"    # PTO HyDE: temp=0 for reproducibility
-    pto_judge_profile: str = "anthropic_opusmedthink"  # PTO judge: Opus 4.8 + 5k thinking
+    sekei_profile: str = "deepseek_v4pro_highalloc"         # Sekei planning: V4 Pro, generous budget for stencil JSON
+    pto_hyde_profile: str = "deepseek_v4flash_temp0"         # PTO HyDE keyword gen: V4 Flash, deterministic
+    pto_judge_profile: str = "deepseek_v4pro_highalloc_temp0"  # PTO judge extraction: V4 Pro, deterministic, high alloc
     # ── Harness LLM role → profile mapping ─────────────────────────────
-    orchestrator_profile: str = "anthropic_orchestrator"
-    pteca_profile: str = "anthropic_sonnetmed"
+    orchestrator_profile: str = "deepseek_v4pro_orchestrator"  # Agent loop: V4 Pro, tool calling
+    pteca_profile: str = "deepseek_v4pro_pteca"                # PTECA chart planner: V4 Pro, tool calling
 
     # ── PUMBA (LLM-reasoned chunk retrieval fallback) ─────────────────
-    pumba_dailo_profile: str = "anthropic_opusmedthink"
-    pumba_gulei_profile: str = "anthropic_sonnetmed"
-    pumba_leng_profile: str = "anthropic_hayasui"
+    pumba_dailo_profile: str = "deepseek_v4pro_highalloc_temp0"  # Dailo: V4 Pro, deterministic extraction
+    pumba_gulei_profile: str = "deepseek_v4pro_med"              # Gulei: V4 Pro, chunk selection
+    pumba_leng_profile: str = "deepseek_v4flash_leng"            # Leng screening: V4 Flash, cheapest pass
 
     # ── Chart output ──────────────────────────────────────────────────
     output_dir: Path = field(default_factory=lambda: _PMS1_ROOT / "output")

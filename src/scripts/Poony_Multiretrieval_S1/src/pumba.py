@@ -563,31 +563,14 @@ def run_pumba(
     ch.print(f"Dailo starting for {request.firm} {request.period}...")
 
     # ── LLM setup ──
-    # Dailo: raw SDK (needs tools=). Model name from profile.
-    dailo_profile = config.get_llm_profile(config.pumba_dailo_profile)
-    dailo_model = dailo_profile["model"]
-    dailo_max_tokens = dailo_profile.get("max_tokens", 8000)
-
-    import anthropic
-    dailo_client = anthropic.Anthropic()
-
-    # Gulei/Leng: LLMBackend via llm.py factories.
-    from src.llm import get_pumba_gulei_llm, get_pumba_leng_llm
+    # All three tiers go through llm.py factories → LLMBackend.
+    from src.llm import (
+        get_pumba_dailo_llm, get_pumba_gulei_llm, get_pumba_leng_llm,
+        LLMResponse,
+    )
+    dailo_backend = get_pumba_dailo_llm(config)
     gulei_llm = get_pumba_gulei_llm(config)
     leng_llm = get_pumba_leng_llm(config)
-
-    # Build thinking kwargs (Dailo ONLY).
-    dailo_extra_kwargs = {}
-    if dailo_profile.get("thinking"):
-        if "opus-4-8" in dailo_model:
-            dailo_extra_kwargs["thinking"] = {"type": "adaptive"}
-            dailo_extra_kwargs["output_config"] = {"effort": "high"}
-        else:
-            budget = dailo_profile.get("thinking_budget", 5000)
-            dailo_extra_kwargs["thinking"] = {
-                "type": "enabled",
-                "budget_tokens": budget,
-            }
 
     # ── Pre-compute file -> table chunks index ──
     file_table_index: dict[str, list[tuple[str, str, str]]] = {}
@@ -622,21 +605,15 @@ def run_pumba(
     turn_counter = 0
 
     while turn_counter < MAX_DAILO_TURNS:
-        response = dailo_client.messages.create(
-            model=dailo_model,
-            system=dailo_system_prompt,
+        response = dailo_backend.call_with_tools(
             messages=messages,
+            system_prompt=dailo_system_prompt,
             tools=DAILO_TOOLS,
-            max_tokens=dailo_max_tokens,
-            **dailo_extra_kwargs,
         )
 
         # ── end_turn without report_results (error) ──
         if response.stop_reason == "end_turn":
-            messages.append({
-                "role": "assistant",
-                "content": response.content,
-            })
+            messages.append(response.to_assistant_message())
             messages.append({
                 "role": "user",
                 "content": (
@@ -648,14 +625,8 @@ def run_pumba(
             continue
 
         # ── no tool calls (max_tokens truncation, unexpected stop) ──
-        tool_blocks = [
-            b for b in response.content if b.type == "tool_use"
-        ]
-        if not tool_blocks:
-            messages.append({
-                "role": "assistant",
-                "content": response.content,
-            })
+        if not response.tool_calls:
+            messages.append(response.to_assistant_message())
             messages.append({
                 "role": "user",
                 "content": (
@@ -671,18 +642,17 @@ def run_pumba(
         tool_results = []
         report = None
 
-        for tb in tool_blocks:
-            if tb.name == "list_dir":
-                path = tb.input["path"]
+        for tc in response.tool_calls:
+            if tc.name == "list_dir":
+                path = tc.input["path"]
                 listing = _list_data_dir(config.data_dir, path)
                 tool_results.append({
-                    "type": "tool_result",
-                    "tool_use_id": tb.id,
+                    "id": tc.id, "name": tc.name,
                     "content": listing,
                 })
 
-            elif tb.name == "spawn_gulei":
-                files = tb.input["files"]
+            elif tc.name == "spawn_gulei":
+                files = tc.input["files"]
                 # Normalize to basenames (Dailo may pass full paths)
                 files = [Path(f).name for f in files]
                 # Truncate to 6
@@ -692,8 +662,7 @@ def run_pumba(
                 files = [f for f in files if f not in blacklist]
                 if not files:
                     tool_results.append({
-                        "type": "tool_result",
-                        "tool_use_id": tb.id,
+                        "id": tc.id, "name": tc.name,
                         "content": (
                             "All requested files already surveyed. "
                             "Pick different files or call "
@@ -711,8 +680,7 @@ def run_pumba(
                     if not valid_files:
                         blacklist.update(files)
                         tool_results.append({
-                            "type": "tool_result",
-                            "tool_use_id": tb.id,
+                            "id": tc.id, "name": tc.name,
                             "content": (
                                 "No valid files found in index. "
                                 "These filenames have no table chunks: "
@@ -742,20 +710,18 @@ def run_pumba(
                                 "remaining in next spawn_gulei call)"
                             )
                         tool_results.append({
-                            "type": "tool_result",
-                            "tool_use_id": tb.id,
+                            "id": tc.id, "name": tc.name,
                             "content": result_str,
                         })
 
-            elif tb.name == "report_results":
+            elif tc.name == "report_results":
                 # Reject if spawn_gulei was also called this turn
                 has_spawn = any(
-                    b.name == "spawn_gulei" for b in tool_blocks
+                    t.name == "spawn_gulei" for t in response.tool_calls
                 )
                 if has_spawn:
                     tool_results.append({
-                        "type": "tool_result",
-                        "tool_use_id": tb.id,
+                        "id": tc.id, "name": tc.name,
                         "content": (
                             "Error: cannot report_results in the same "
                             "turn as spawn_gulei. See the spawn results "
@@ -763,21 +729,19 @@ def run_pumba(
                         ),
                     })
                 else:
-                    report = tb.input
+                    report = tc.input
                     if "node_ids" in report:
                         report["node_ids"] = report["node_ids"][:3]
                     tool_results.append({
-                        "type": "tool_result",
-                        "tool_use_id": tb.id,
+                        "id": tc.id, "name": tc.name,
                         "content": "Received.",
                     })
 
-        # Append conversation history (preserves thinking blocks)
-        messages.append({
-            "role": "assistant",
-            "content": response.content,
-        })
-        messages.append({"role": "user", "content": tool_results})
+        # Append conversation history
+        messages.append(response.to_assistant_message())
+        messages.append(
+            LLMResponse.make_tool_results_message(tool_results)
+        )
 
         if report is not None:
             if report.get("exhausted"):

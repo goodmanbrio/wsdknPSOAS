@@ -1,53 +1,58 @@
 # Model-Agnostic Tool Calling + LLM Centralization
 
 Extend `LLMBackend` with a normalized `call_with_tools()` method so
-agent_loop and PTECA route through the same multi-provider factory
-that PMS1 internals already use. Eliminate all direct `anthropic.Anthropic()`
-usage from harness code.
+agent_loop, PTECA, and PUMBA Dailo route through the same multi-provider
+factory that PMS1 internals already use. Eliminate **all** direct
+`anthropic.Anthropic()` usage from the entire codebase.
 
 ## Architecture
 
 ### Before (current state)
 
 ```
-                     PMS1 pipeline (CLEAN)
-                     ─────────────────────
+                     PMS1 pipeline (CLEAN — complete() only)
+                     ───────────────────────────────────────
 sekei.py          →  get_sekei_llm(config)       →  LLMBackend.complete()
 pto.py            →  get_pto_judge_llm(config)    →  LLMBackend.complete()
 pto.py            →  get_pto_hyde_llm(config)     →  LLMBackend.complete()
 pumba.py          →  get_pumba_gulei_llm(config)  →  LLMBackend.complete()
 pumba.py          →  get_pumba_leng_llm(config)   →  LLMBackend.complete()
 
-                     Harness (HARDCODED ANTHROPIC)
-                     ─────────────────────────────
+                     HARDCODED ANTHROPIC (tool calling)
+                     ──────────────────────────────────
 agent_loop.py     →  anthropic.Anthropic()        →  client.messages.create(tools=...)
-tool_pteca.py     →  anthropic.Anthropic()         →  client.messages.create(tools=...)
+tool_pteca.py     →  anthropic.Anthropic()        →  client.messages.create(tools=...)
+pumba.py (Dailo)  →  anthropic.Anthropic()        →  client.messages.create(tools=...)
 ```
 
-Problem: agent_loop and tool_pteca bypass llm.py entirely because
+Problem: agent_loop, tool_pteca, and PUMBA Dailo bypass llm.py because
 `LLMBackend` has no tool calling method. They hardcode `import anthropic`,
 Anthropic-specific response parsing (`response.stop_reason`, `block.type`,
 `tb.id`, `tb.name`, `tb.input`), and Anthropic-specific message
-accumulation format.
+accumulation format. Dailo was initially missed because the spec
+assumed "pumba.py uses LLMBackend.complete()" — true for Gulei/Leng,
+but Dailo has its own agentic tool-calling loop.
 
-### After (target state)
+### After (implemented state)
 
 ```
-                     PMS1 pipeline (unchanged)
-                     ────────────────────────
+                     complete() roles (unchanged)
+                     ────────────────────────────
 sekei.py          →  get_sekei_llm(config)          →  LLMBackend.complete()
 pto.py            →  get_pto_judge_llm(config)       →  LLMBackend.complete()
 pto.py            →  get_pto_hyde_llm(config)        →  LLMBackend.complete()
 pumba.py          →  get_pumba_gulei_llm(config)     →  LLMBackend.complete()
 pumba.py          →  get_pumba_leng_llm(config)      →  LLMBackend.complete()
 
-                     Harness (NOW THROUGH llm.py)
-                     ─────────────────────────────
+                     call_with_tools() roles (all migrated)
+                     ──────────────────────────────────────
 agent_loop.py     →  get_orchestrator_llm(config)    →  LLMBackend.call_with_tools()
 tool_pteca.py     →  get_pteca_llm(config)           →  LLMBackend.call_with_tools()
+pumba.py (Dailo)  →  get_pumba_dailo_llm(config)     →  LLMBackend.call_with_tools()
 ```
 
-All LLM access goes through llm.py. Provider selection is config-only.
+All LLM access goes through llm.py. Zero `import anthropic` outside
+of `AnthropicLLM` in llm.py. Provider selection is config-only.
 
 ### Component diagram
 
@@ -856,19 +861,29 @@ def _parse_gemini_response(self, resp) -> LLMResponse:
 
 ## Config changes
 
-### config.py additions
+### config.py — role → profile mapping (all roles, current defaults)
 
 ```python
 @dataclass
 class Config:
-    # ... existing fields ...
+    # ── PMS1 pipeline roles ────────────────────────────────────
+    sekei_profile: str = "deepseek_v4pro_highalloc"
+    pto_hyde_profile: str = "deepseek_v4flash_temp0"
+    pto_judge_profile: str = "deepseek_v4pro_highalloc_temp0"
 
-    # ── Harness LLM role → profile mapping (NEW) ─────────────
-    orchestrator_profile: str = "anthropic_orchestrator"
-    pteca_profile: str = "anthropic_sonnetmed"
+    # ── Harness roles ──────────────────────────────────────────
+    orchestrator_profile: str = "deepseek_v4pro_orchestrator"
+    pteca_profile: str = "deepseek_v4pro_pteca"
+
+    # ── PUMBA roles ────────────────────────────────────────────
+    pumba_dailo_profile: str = "deepseek_v4pro_highalloc_temp0"
+    pumba_gulei_profile: str = "deepseek_v4pro_med"
+    pumba_leng_profile: str = "deepseek_v4flash_leng"
 ```
 
-These follow the same pattern as `sekei_profile`, `pto_hyde_profile`, etc.
+All defaults point to DeepSeek V4. To revert any role to Anthropic,
+change the string (e.g. `orchestrator_profile: str = "anthropic_orchestrator"`).
+All original Anthropic profiles preserved in llm_profiles.yaml.
 
 ### llm.py new imports
 
@@ -889,16 +904,17 @@ These are needed for `ToolCall`/`LLMResponse` dataclasses and
 
 ### llm.py constructor changes
 
-`OpenAICompatibleLLM` and `GeminiLLM` need `max_tokens` in `__init__`
-so `call_with_tools()` can use `self._max_tokens` as default:
+`OpenAICompatibleLLM` needs `max_tokens` and `thinking` in `__init__`.
+`GeminiLLM` needs `max_tokens`.
 
 ```python
-# OpenAICompatibleLLM — add max_tokens param
+# OpenAICompatibleLLM — add max_tokens + thinking params
 class OpenAICompatibleLLM(LLMBackend):
     def __init__(self, model, api_key, base_url, temperature,
-                 max_tokens=4096):
+                 max_tokens=4096, thinking=False):
         # ... existing init ...
         self._max_tokens = max_tokens
+        self._thinking = thinking  # DeepSeek V4 thinking mode
 
 # GeminiLLM — add max_tokens param + call counter
 class GeminiLLM(LLMBackend):
@@ -909,16 +925,17 @@ class GeminiLLM(LLMBackend):
         self._call_counter = 0   # session-scoped ID for synthesized tool call IDs
 ```
 
-Update `_make_llm()` to pass `max_tokens` to all backends:
+Update `_make_llm()` to pass `max_tokens` + `thinking` to backends:
 
 ```python
-# OpenAI-compatible path (add max_tokens):
+# OpenAI-compatible path (add max_tokens + thinking):
 return OpenAICompatibleLLM(
     model=profile["model"],
     api_key=api_key,
     base_url=base_url,
     temperature=profile.get("temperature", 0.1),
     max_tokens=profile.get("max_tokens", 4096),
+    thinking=profile.get("thinking", False),
 )
 
 # Gemini path (add max_tokens):
@@ -929,7 +946,7 @@ return GeminiLLM(
     max_tokens=profile.get("max_tokens", 4096),
 )
 
-# Anthropic path: unchanged (already passes max_tokens)
+# Anthropic path: unchanged (already passes max_tokens + thinking)
 ```
 
 ### llm.py factory additions
@@ -942,39 +959,79 @@ def get_orchestrator_llm(config: Config) -> LLMBackend:
 def get_pteca_llm(config: Config) -> LLMBackend:
     """PTECA chart planning agent LLM — tool calling required."""
     return _get(config, "pteca_profile")
+
+def get_pumba_dailo_llm(config: Config) -> LLMBackend:
+    """PUMBA Dailo LLM — agentic file search + extraction (tool calling)."""
+    return _get(config, "pumba_dailo_profile")
 ```
 
 ### llm_profiles.yaml
 
-No structural changes. Existing profiles work as-is. New profiles
-added when users want to try other providers:
+All Anthropic profiles preserved. DeepSeek V4 profiles added and set
+as defaults. Key design:
+
+- **V4 Pro** ($0.435/M in, $0.87/M out) for all high-capability roles.
+  `thinking: true` on all Pro profiles — backend passes
+  `extra_body={"thinking": {"type": "enabled"}}` to the API.
+- **V4 Flash** ($0.14/M in, $0.28/M out) for cheap screening/keyword roles.
+
+**CRITICAL: `deepseek-chat` and `deepseek-reasoner` deprecated
+2026-07-24 15:59 UTC.** Legacy profiles updated to `deepseek-v4-flash`.
 
 ```yaml
-# NEW — orchestrator with thinking (for testing thinking + tool calling)
-anthropic_orchestrator_thinking:
-  provider: anthropic
-  model: claude-sonnet-4-6
-  thinking: true
-  thinking_budget: 5000
-  max_tokens: 8000        # 5k thinking + 3k answer
-
-# NEW (add when ready — not required for initial implementation)
-deepseek_orchestrator:
+# ── DeepSeek V4 Pro (Opus-tier) ──────────────────────────────
+deepseek_v4pro_orchestrator:
   provider: deepseek
-  model: deepseek-chat
+  model: deepseek-v4-pro
   temperature: 0.1
+  thinking: true
+  max_tokens: 8192
+
+deepseek_v4pro_pteca:
+  provider: deepseek
+  model: deepseek-v4-pro
+  temperature: 0.1
+  thinking: true
   max_tokens: 4096
 
-gemini_orchestrator:
-  provider: gemini
-  model: gemini-2.5-flash
+deepseek_v4pro_highalloc:
+  provider: deepseek
+  model: deepseek-v4-pro
   temperature: 0.1
+  thinking: true
+  max_tokens: 16384
+
+deepseek_v4pro_highalloc_temp0:
+  provider: deepseek
+  model: deepseek-v4-pro
+  temperature: 0.0
+  thinking: true
+  max_tokens: 16384
+
+deepseek_v4pro_med:
+  provider: deepseek
+  model: deepseek-v4-pro
+  temperature: 0.1
+  thinking: true
+  max_tokens: 8192
+
+# ── DeepSeek V4 Flash (Sonnet/Haiku-tier) ────────────────────
+deepseek_v4flash_temp0:
+  provider: deepseek
+  model: deepseek-v4-flash
+  temperature: 0.0
   max_tokens: 4096
+
+deepseek_v4flash_leng:
+  provider: deepseek
+  model: deepseek-v4-flash
+  temperature: 0.0
+  max_tokens: 3000
 ```
 
 To switch providers, change one line in `config.py`:
 ```python
-orchestrator_profile: str = "deepseek_orchestrator"
+orchestrator_profile: str = "anthropic_orchestrator"
 ```
 
 Or override at runtime:
@@ -1699,6 +1756,76 @@ warning: `"Unexpected stop_reason: {stop_reason}"`. Not adding
 now to avoid scope creep.
 
 
+### DeepSeek V4 Pro tool-as-text bug
+
+DeepSeek V4 Pro intermittently emits tool calls as plain text in
+`content` instead of structured `tool_calls` array (~11% of the
+time, per deepseek-ai/DeepSeek-V3#1244). `finish_reason` comes
+back `"stop"` instead of `"tool_calls"`.
+
+Mitigation: `OpenAICompatibleLLM.call_with_tools()` has a retry
+loop (max 3 attempts). Detection heuristic: `stop_reason == "end_turn"`
+AND the response text contains a tool name from the provided tools
+list. P(fail all 3) ≈ 0.1%.
+
+Side effect on non-DeepSeek OpenAI-compatible providers: if a model
+legitimately ends a turn while mentioning a tool name in text (rare),
+2 extra API calls are wasted before returning the response. Bounded
+and benign.
+
+### DeepSeek V4 thinking mode — reasoning_content echo-back
+
+DeepSeek V4 thinking mode returns chain-of-thought in a
+`reasoning_content` field alongside `content`. For multi-turn
+with tool calls, `reasoning_content` **must** be echoed back.
+Empty string (not null) is required on tool-call turns where
+thinking didn't fire.
+
+Implementation:
+- `_parse_openai_response()`: captures `reasoning_content` via
+  `getattr(message, "reasoning_content", None)`, stores as
+  `{"type": "reasoning", "reasoning": text}` block in `raw_content`.
+- `to_assistant_message()`: checks for `"reasoning"` block type
+  alongside `"thinking"` and `"redacted_thinking"` — returns
+  structured `raw_content` (not collapsed text) when present.
+- `_messages_to_openai()`: extracts `"reasoning"` blocks from
+  assistant content, sets `reasoning_content` field on the
+  message dict. When `self._thinking` is True and tool_calls are
+  present but no reasoning block exists, sets `reasoning_content: ""`.
+- Non-DeepSeek providers: `getattr` returns None → guard skips →
+  no `reasoning_content` field added. Zero impact on Anthropic,
+  Gemini, vanilla OpenAI.
+
+### DeepSeek V4 thinking mode activation
+
+Thinking mode is a per-request parameter, not a model flag.
+`OpenAICompatibleLLM` passes `extra_body={"thinking": {"type": "enabled"}}`
+to the OpenAI SDK's `create()` when `self._thinking` is True.
+Profiles set `thinking: true`; `_make_llm()` passes it to the
+constructor.
+
+DeepSeek V4 thinking mode ignores `temperature`, `top_p`,
+`presence_penalty`, `frequency_penalty` — no error, just no effect.
+Non-thinking profiles work unchanged.
+
+### Legacy model deprecation (deepseek-chat / deepseek-reasoner)
+
+`deepseek-chat` and `deepseek-reasoner` are **fully retired and
+inaccessible after 2026-07-24 15:59 UTC**. Both legacy profiles
+(`deepseek_chattemp0`, `deepseek_chattemp01`) have been updated
+to use `deepseek-v4-flash` as the model name.
+
+### PUMBA Dailo was originally missed
+
+The initial spec stated "pumba.py uses LLMBackend.complete() —
+unchanged." This was true for Gulei and Leng, but Dailo has its
+own agentic tool-calling loop that used raw `anthropic.Anthropic()`.
+When config defaults were switched to DeepSeek profiles, Dailo
+tried to call `deepseek-v4-pro` via the Anthropic SDK → auth error.
+Fixed by migrating Dailo to `get_pumba_dailo_llm(config)` +
+`call_with_tools()` — same pattern as agent_loop and PTECA.
+
+
 ## Dependencies
 
 | Component | What it provides | Import style |
@@ -1716,15 +1843,26 @@ No new dependencies. All three SDKs already exist in the codebase.
 ```
 MODIFIED:
   src/scripts/llm.py              Add ToolCall, LLMResponse, call_with_tools()
-                                   implementations, new factory functions,
+                                   implementations, new factory functions
+                                   (incl. get_pumba_dailo_llm),
+                                   OpenAICompatibleLLM: thinking param, extra_body,
+                                   reasoning_content capture/echo, retry loop.
                                    add import json + dataclass
                                    (_build_kwargs NOT changed — see spec 13b)
-  src/scripts/config.py            Add orchestrator_profile, pteca_profile fields
+  src/scripts/config.py            All role → profile mappings (defaults: DeepSeek V4)
+  src/scripts/llm_profiles.yaml    DeepSeek V4 Pro + Flash profiles added,
+                                   legacy deepseek-chat profiles updated to v4-flash.
+                                   All Anthropic profiles preserved.
   src/harness/agent_loop.py        Replace anthropic SDK with factory + LLMResponse,
                                    accept config param, call set_config()
   src/tools/tool_pteca.py          Replace anthropic SDK with factory + LLMResponse,
                                    accept config param
   src/harness/execute_tool.py      Add _config + set_config(), pass config to PTECA
+  src/scripts/Poony_Multiretrieval_S1/src/pumba.py
+                                   Dailo agent loop: replace anthropic.Anthropic()
+                                   with get_pumba_dailo_llm() + call_with_tools().
+                                   Remove manual thinking kwargs. Normalize message
+                                   accumulation + tool result format.
 
 DELETED:
   src/scripts/Poony_Multiretrieval_S1/src/llm.py
@@ -1749,17 +1887,12 @@ UNCHANGED:
 
 ## Ideal demo
 
-### Same behavior, different config (swap orchestrator to DeepSeek)
+### Default behavior (all roles on DeepSeek V4)
 
 ```python
-# config.py — one line change
-orchestrator_profile: str = "deepseek_orchestrator"
-
-# llm_profiles.yaml — add profile
-deepseek_orchestrator:
-  provider: deepseek
-  model: deepseek-chat
-  temperature: 0.1
+# config.py — current defaults (no change needed)
+orchestrator_profile: str = "deepseek_v4pro_orchestrator"
+# All other roles also default to DeepSeek V4 Pro/Flash
 ```
 
 ```
@@ -1791,35 +1924,36 @@ Running PMS1.
 [ORCHESTRATOR] Done. 1 chart saved.
 ```
 
-Externally identical. Internally DeepSeek handles orchestration,
-PMS1 internals still use their configured models (Opus for sekei/judge,
-DeepSeek for HyDE).
+Externally identical. Internally DeepSeek V4 Pro handles orchestration,
+all PMS1 internals use their configured DeepSeek profiles.
 
-### Swap PTECA to Gemini
+### Swap one role back to Anthropic
 
 ```python
-# config.py
-pteca_profile: str = "gemini_orchestrator"
+# config.py — one string change
+pteca_profile: str = "anthropic_sonnetmed"
 ```
 
-PTECA now runs on Gemini. Orchestrator stays on whatever its profile says.
+PTECA now runs on Anthropic Sonnet. Orchestrator stays on DeepSeek V4 Pro.
 Both go through `call_with_tools()`, both produce normalized `LLMResponse`.
 
 ### Runtime override (no config.py change)
 
 ```python
 config = Config.from_env(
-    orchestrator_profile="gemini_orchestrator",
-    pteca_profile="deepseek_orchestrator",
+    orchestrator_profile="anthropic_orchestrator",
+    pteca_profile="deepseek_v4pro_pteca",
+    pumba_dailo_profile="anthropic_opusmedthink",
 )
 run_harness(first_query="Chart Amcor margins", config=config)
 ```
 
-Mixed-provider in one session: Gemini orchestrator, DeepSeek PTECA.
-Config flows: `run_harness` → `set_config(config)` in execute_tool →
-`_exec_pteca` passes `config=_config` → `run_pteca` uses it for
-`get_pteca_llm(config)`. Terminal output, transcripts, registry — all
-unchanged.
+Mixed-provider in one session: Anthropic orchestrator, DeepSeek PTECA,
+Anthropic PUMBA Dailo. Config flows: `run_harness` → `set_config(config)`
+in execute_tool → `_exec_pteca` passes `config=_config` → `run_pteca`
+uses it for `get_pteca_llm(config)`. PUMBA receives config from
+PMS1 orchestrator.py call chain. Terminal output, transcripts,
+registry — all unchanged.
 
 
 ## What NOT to change
@@ -1836,9 +1970,11 @@ unchanged.
 
 - `terminal_router.py`. Pure I/O routing.
 
-- PMS1 internal pipeline code (sekei.py, pto.py, orchestrator.py,
-  stencil.py, pumba.py). These use `LLMBackend.complete()` which
-  is unchanged.
+- PMS1 internal pipeline code that uses `LLMBackend.complete()`
+  (sekei.py, pto.py, orchestrator.py, stencil.py). These are
+  unchanged. Note: pumba.py WAS changed — Dailo's tool-calling
+  agent loop was migrated from raw Anthropic SDK to
+  `call_with_tools()`. Gulei/Leng (complete()-only) unchanged.
 
 - The `complete()` / `complete_with_usage()` / `stream()` methods on
   LLMBackend. PMS1 code depends on these. Adding `call_with_tools()`
@@ -1932,3 +2068,52 @@ unchanged.
 - **No new files.** All changes are to existing files. No new
   modules, no new abstractions beyond ToolCall + LLMResponse
   dataclasses.
+
+- **PUMBA Dailo migration.** Dailo was originally missed because
+  the spec assumed all of pumba.py used `complete()`. Gulei and
+  Leng do; Dailo has its own agentic tool-calling loop. Migrated
+  with the same pattern as agent_loop and PTECA: factory +
+  `call_with_tools()` + ToolCall + LLMResponse. The manual
+  thinking kwargs block (Anthropic-specific `opus-4-8` detection)
+  was removed — the backend handles thinking internally.
+
+- **DeepSeek V4 thinking via OpenAI-compatible SDK.** Thinking is
+  a per-request param (`extra_body={"thinking": {"type": "enabled"}}`),
+  not a model-level feature. `OpenAICompatibleLLM` reads `thinking`
+  from the profile via `_make_llm()`. The `complete()` and
+  `call_with_tools()` methods pass `extra_body` when `self._thinking`
+  is True. Non-thinking profiles are unaffected — `extra_body` is
+  not added. Non-DeepSeek providers with `thinking=False` (the
+  default) see zero change.
+
+- **`reasoning_content` block type.** Stored as `"reasoning"` (not
+  `"thinking"`) to distinguish from Anthropic's `"thinking"` blocks.
+  `to_assistant_message()` treats both as structured content.
+  `_messages_to_openai()` converts `"reasoning"` blocks to the
+  `reasoning_content` field. `_messages_to_anthropic()` and
+  `_messages_to_gemini()` silently skip `"reasoning"` blocks
+  (their loops only match `"text"` and `"tool_use"`). `_dump_turn()`
+  also silently skips them (same as `"thinking"` blocks).
+
+- **Retry loop scope.** The tool-as-text retry applies to all
+  `OpenAICompatibleLLM` instances, not just DeepSeek. The detection
+  heuristic (end_turn + tool name in text) is narrow enough that
+  false positives on well-behaved providers are rare. Worst case:
+  2 wasted API calls, then the response is returned normally.
+  Not gated on provider name to avoid brittleness.
+
+- **DeepSeek V4 model naming.** `deepseek-v4-pro` and
+  `deepseek-v4-flash` are the stable model IDs. Legacy
+  `deepseek-chat` / `deepseek-reasoner` map to v4-flash
+  non-thinking / thinking modes respectively, and are
+  deprecated 2026-07-24. The `base_url` (`https://api.deepseek.com/v1`)
+  is unchanged.
+
+- **Provider revert is one-string.** Every role's profile is a
+  single string in config.py. All original Anthropic profiles
+  (`anthropic_orchestrator`, `anthropic_opusmedthink`,
+  `anthropic_sonnetmed`, `anthropic_hayasui`, etc.) are preserved
+  in llm_profiles.yaml. Switching back requires no code changes —
+  just change the profile string. Runtime override via
+  `Config.from_env(orchestrator_profile="anthropic_orchestrator")`
+  also works.
