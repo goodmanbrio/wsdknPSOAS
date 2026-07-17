@@ -8,11 +8,12 @@ to completion (end_turn), then prompts for follow-up. Session state
 ## Architecture
 
 ```
-python src/psoas.py
+python psoas.py
     │
-    ├── sys.path setup
-    ├── client = anthropic.Anthropic()
-    ├── config, model loaded once
+    ├── sys.path setup (module-level in src/psoas.py, not in main())
+    ├── run_harness(first_query=query)
+    │     ├── client = anthropic.Anthropic()
+    │     ├── config, model loaded once
     ├── session_dir + transcript created once
     ├── registry.reset() once
     ├── banner printed once
@@ -53,18 +54,9 @@ Session end summary panel (spec 10)
 ### Connection to spec 02 (agent_loop)
 
 ```
-BEFORE (spec 02):
+CURRENT (spec 02 + spec 11 merged):
 
-    run_harness(user_query: str)
-        ├── setup (client, session, transcript, banner)
-        ├── messages = [{"role":"user","content": user_query}]
-        ├── WHILE LOOP (inner)
-        │     └── end_turn → break → session summary → return
-        └── done
-
-AFTER (spec 11):
-
-    run_harness()                        ← no arg
+    run_harness(first_query: str | None = None)
         ├── setup (client, session, transcript, banner)
         ├── messages = []                ← empty, REPL fills it
         │
@@ -173,29 +165,33 @@ Subsequent inputs use `## User (follow-up)`.
 | `session_dir` | Yes | No | Same session directory. One session = one psoas.py invocation. |
 | `transcript` | Yes | No | Same file, appended. |
 | `transcript_turn` | Yes | No | Monotonic. Never resets. Drives `## Turn N`. |
-| `turn_counter` | — | Yes → 0 | Reset at top of each outer REPL iteration. Fresh user input = fresh runway for checkpoint guard. |
+| `turn_counter` | — | Yes → 0 | Reset at top of each outer REPL iteration AND at checkpoint confirm. Fresh user input = fresh runway for checkpoint guard. |
+| `is_first_input` | Yes | No (False after first input) | Controls `## User` vs `## User (follow-up)` in transcript. |
 
 ## Exit conditions
 
 | Trigger | Behavior |
 |---|---|
 | User types `exit` (case-insensitive, stripped) | Break outer loop → session summary → return |
-| Ctrl+D (EOF on stdin) | Break outer loop → session summary → return |
+| Ctrl+D (EOF on stdin) | `_router._is_dead` becomes True, `input()` returns `""` → detected as `not user_input.strip() and _router._is_dead` → break outer loop → session summary → return |
 | Empty input (just Enter) | Print hint, continue outer loop (re-prompt). NOT an exit. |
 
 ```python
 # Inside outer REPL:
-while True:
-    if is_first and first_query is not None:
-        user_input = first_query
-        is_first = False
-    else:
-        try:
-            user_input = orchestrator_out.input("")
-        except EOFError:
-            break
+first_query = first_query          # consumed on first iteration, then None
 
+while True:
+    if first_query is not None:
+        user_input = first_query
+        first_query = None         # consumed — future iterations prompt
+    else:
+        user_input = orchestrator_out.input("")
+
+        # D11: ToolChannel.input() never raises EOFError — returns ""
+        # when _is_dead. Detect EOF via empty input + dead router.
         if not user_input.strip():
+            if _router._is_dead:
+                break        # EOF — exit outer REPL
             orchestrator_out.print("Type a query, or 'exit' to quit.")
             continue
 
@@ -210,7 +206,8 @@ while True:
 ### Inherited from spec 02 (unchanged)
 
 - Max 5 tool calls per turn (all cancelled if exceeded)
-- Max 6 turns before checkpoint (turn_counter resets on continue AND on follow-up)
+- Max 6 turns before checkpoint (turn_counter resets on follow-up
+  AND on checkpoint confirm ('y'))
 
 ### New: no accidental exit
 
@@ -229,8 +226,8 @@ while True:
 ## File locations
 
 ```
-PSOAS/src/harness/agent_loop.py   (MODIFIED — outer REPL wraps inner loop)
-PSOAS/src/psoas.py                (MODIFIED — no more required arg)
+src/harness/agent_loop.py   (outer REPL wraps inner loop)
+src/psoas.py                (thin entry point, calls run_harness)
 ```
 
 No new files.
@@ -344,9 +341,14 @@ $ python src/psoas.py "Chart Best Buy gross margins FY2022-2023"
 - **Registry across follow-ups.** Preserved. User can reference prior
   handles ("use the same chart format"). LLM sees full message history
   including prior tool results mentioning `$var_N`.
-- **turn_counter reset.** Reset to 0 on each follow-up. Fresh user
-  input = not a rogue LLM loop. Checkpoint guard only triggers on
-  consecutive LLM turns without user harness-level interaction.
+- **turn_counter reset.** Reset to 0 on each follow-up AND on
+  checkpoint confirm ('y'). Fresh user input = not a rogue LLM loop.
+  Checkpoint guard only triggers on consecutive LLM turns without
+  user harness-level interaction.
+- **max_tokens recovery.** When stop_reason == "max_tokens" and no
+  tool_blocks present, inner loop appends a continuation prompt as
+  user message and retries. Counts toward turn_counter. Does not
+  surface to outer REPL.
 - **transcript_turn reset.** NEVER resets. Monotonic within session.
   Turn 1, 2, 3, 4, 5, 6... regardless of follow-ups.
 - **Exit behavior.** Only `exit` (literal, case-insensitive) or

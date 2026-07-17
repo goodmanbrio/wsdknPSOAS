@@ -7,10 +7,14 @@ right table chunks by reasoning about filenames and section names,
 and returns real docstore node_ids to the existing pto_judge for
 authoritative value extraction.
 
-PUMBA is NOT a PSOAS-level tool. It is a PMS1-internal fallback
-called by orchestrator.py. It has no JSON schema and no execute_tool
-branch. It registers its own ToolChannel under label `"PUMBA"` for
-status output (all tiers print through this one channel).
+PUMBA is currently a PMS1-internal fallback called by
+orchestrator.py. It has no JSON schema and no execute_tool branch.
+It registers its own ToolChannel under label `"PUMBA"` for status
+output (all tiers print through this one channel).
+
+Future: the harness orchestrator may specify PMS1 call types to
+PUMBA directly (e.g. force PUMBA on specific batches). Not yet
+exposed as an orchestrator-level tool.
 
 ## Why PUMBA exists
 
@@ -291,21 +295,17 @@ via `channel.input()` what to do — same pattern as PTECA's
 # When Dailo exhausts or Judge fails on PUMBA chunks:
 answer = ch.input(
     "PUMBA failed to find the data. Options:\n"
-    "  'skip' — skip this batch, continue with remaining batches\n"
-    "  'exit' — abort the entire PMS1 run\n"
-    "  (or type anything else to provide guidance)\n"
+    "  'skip' - skip this batch\n"
+    "  'exit' - abort the entire PMS1 run\n"
     "Your choice:"
 )
 
-if answer.strip().lower() == "skip":
-    return []   # empty list = no node_ids, orchestrator skips batch
-elif answer.strip().lower() == "exit":
-    raise ValueError("User aborted after PUMBA failure")
-else:
-    # User provided guidance — future: feed back into Dailo
-    # For now: treat as skip
-    ch.print(f"Noted: '{answer}'. Skipping batch for now.")
-    return []
+if answer.strip().lower() == "exit":
+    raise ValueError(
+        f"User aborted after PUMBA exhausted "
+        f"all files for {request.firm}"
+    )
+return []  # skip batch (default for any non-"exit" input)
 ```
 
 The orchestrator handles `[]` (empty node_ids) by skipping that
@@ -723,6 +723,11 @@ with list_dir, spawn_gulei, and report_results.
 
             elif tb.name == "spawn_gulei":
                 files = tb.input["files"]
+                # Normalize to basenames (Dailo may pass full paths)
+                files = [Path(f).name for f in files]
+                # Truncate to 6
+                if len(files) > 6:
+                    files = files[:6]
                 # Python enforces blacklist even if Dailo re-picks
                 files = [f for f in files if f not in blacklist]
                 if not files:
@@ -736,19 +741,46 @@ with list_dir, spawn_gulei, and report_results.
                         ),
                     })
                 else:
-                    results = _run_guleis_parallel(
-                        files, request, index, file_table_index,
-                        gulei_llm, leng_llm, ch,
-                    )
-                    blacklist.update(files)
-                    result_str = _format_spawn_gulei_result(
-                        files, results, index, blacklist
-                    )
-                    tool_results.append({
-                        "type": "tool_result",
-                        "tool_use_id": tb.id,
-                        "content": result_str,
-                    })
+                    # Validate filenames exist in docstore
+                    valid_files = [
+                        f for f in files if f in file_table_index
+                    ]
+                    invalid_files = [
+                        f for f in files if f not in file_table_index
+                    ]
+                    if not valid_files:
+                        blacklist.update(files)
+                        tool_results.append({
+                            "type": "tool_result",
+                            "tool_use_id": tb.id,
+                            "content": (
+                                "No valid files found in index. "
+                                "These filenames have no table chunks: "
+                                + ", ".join(invalid_files)
+                            ),
+                        })
+                    else:
+                        results = _run_guleis_parallel(
+                            valid_files, request, index,
+                            file_table_index, gulei_llm, leng_llm, ch,
+                        )
+                        blacklist.update(valid_files)
+                        blacklist.update(invalid_files)
+                        n_hits = sum(
+                            1 for r in results if r is not None
+                        )
+                        ch.print(
+                            f"Round: {n_hits}/{len(valid_files)} "
+                            f"files returned chunks"
+                        )
+                        result_str = _format_spawn_gulei_result(
+                            valid_files, results, index, blacklist,
+                        )
+                        tool_results.append({
+                            "type": "tool_result",
+                            "tool_use_id": tb.id,
+                            "content": result_str,
+                        })
 
             elif tb.name == "report_results":
                 # Reject if spawn_gulei was also called this turn —
@@ -830,10 +862,10 @@ with list_dir, spawn_gulei, and report_results.
   to basename via `Path(f).name` (Dailo may pass full paths like
   `"Consumer Discretionary/BESTBUY/BESTBUY_2023_10K.md"` from
   list_dir output, but docstore `file_name` metadata is just the
-  filename). Then validates each filename exists in docstore (at
-  least one chunk with that `file_name` metadata). Drop invalid
-  filenames silently. If all invalid, return "no valid files" to
-  Dailo.
+  filename). Then splits into `valid_files` (present in
+  `file_table_index`) and `invalid_files` (no table chunks). Only
+  valid files are sent to Gulei. Both sets are added to blacklist.
+  If all invalid, return error to Dailo listing the invalid filenames.
 
 ### _list_data_dir
 
@@ -901,6 +933,7 @@ def _run_single_gulei(
 
     # Step 1: GuleiPai picks top-k chunks
     k = min(12, len(table_chunks))  # never more than available
+    ch.print(f"  Gulei {file_name}: GuleiPai picking {k}...")
     picks = _run_gulei_pai(table_chunks, request, gulei_llm)
     if not picks:
         ch.print(f"  Gulei {file_name}: NOT FOUND (GuleiPai returned nothing)")
@@ -937,7 +970,8 @@ def _run_single_gulei(
                 leng_results.append({"found": False})
 
     hits = [r for r in leng_results if r.get("found")]
-    ch.print(f"  Gulei {file_name}: {len(hits)} Leng hits")
+    n_lengs = len(picked_chunks)
+    ch.print(f"  Gulei {file_name}: {len(hits)} Leng hits out of {n_lengs}")
 
     # Step 3: branch
     if len(hits) == 0:
@@ -950,7 +984,7 @@ def _run_single_gulei(
         return nid
 
     # hits > 1: GuleiSau picks best
-    ch.print(f"  Gulei {file_name}: GuleiSau picking best of {len(hits)}")
+    ch.print(f"  Gulei {file_name}: GuleiSau picking best of {len(hits)} hits")
     best_nid = _run_gulei_sau(hits, request, index, gulei_llm)
     ch.print(f"  Gulei {file_name}: FOUND {best_nid[:12]}...")
     return best_nid
@@ -1353,10 +1387,10 @@ ch.print(f"  Gulei {fname}: GuleiSau picking best of {len(hits)} hits")
 # result:
 ch.print(f"  Gulei {fname}: {'FOUND ' + nid[:12] if nid else 'NOT FOUND'}")
 
-# Dailo round summary (in spawn_gulei tool result formatting):
+# Dailo round summary (in spawn_gulei handler, after Guleis finish):
 # (shown to user, not to Dailo LLM)
 n_hits = sum(1 for r in results if r is not None)
-ch.print(f"Round: {n_hits}/{len(files)} files returned chunks")
+ch.print(f"Round: {n_hits}/{len(valid_files)} files returned chunks")
 
 # Final:
 ch.print(f"Returning {len(node_ids)} chunks to Judge.")
@@ -1626,6 +1660,9 @@ SDK (needs `tools=` in the API call). Model name still comes from
 
 ```python
 # In pumba.py — run_pumba entry point:
+# The Dailo agent loop runs inline in run_pumba() (not factored
+# into a separate _run_dailo function — the pre-computation,
+# LLM setup, and agent loop are all in one function body).
 def run_pumba(request, index, config, channel=None):
     ch = channel or register("PUMBA")
 
@@ -1638,9 +1675,8 @@ def run_pumba(request, index, config, channel=None):
     gulei_llm = get_pumba_gulei_llm(config)  # could be deepseek, gemini, etc.
     leng_llm = get_pumba_leng_llm(config)    # could be haiku, gemini-flash, etc.
 
-    return _run_dailo(dailo_client, dailo_profile,
-                      gulei_llm, leng_llm,
-                      request, index, config, ch)
+    # ... pre-compute file_table_index, build system prompt,
+    #     then Dailo agent loop runs inline (see Agent loop section) ...
 ```
 
 **Thread safety:** `LLMBackend` instances are NOT guaranteed

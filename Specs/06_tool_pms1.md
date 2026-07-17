@@ -44,20 +44,21 @@ run_pms1_pipeline("Best Buy", "margins FY2022-2023", channel)
     │
     ├── channel.print("Loading index...")
     ├── config = Config.from_env()
-    ├── index = load_index(config)           ← expensive on first call
+    ├── index = _load_index(config)        ← cached with double-check locking (D3)
     │
     ├── channel.print("Sekei planning...")
     ├── plan = sekei(query, config)          ← existing sekei.py
     ├── channel.print(f"done. {n} cells, {m} batches.")
     │
-    ├── channel.print(f"PTO batch {batch.id}...")
+    ├── channel.print(f"Running {n_batches} batches...")
     ├── results = run(plan, index, config)   ← existing orchestrator.py
     │       │
-    │       ├── (internally prints generic [PMS1] warnings — fine)
+    │       ├── (internal per-batch prints via override_channel → [PMS1-Best Buy])
     │       ├── loops batches: pto_retrieve → pto_judge → merge
+    │       ├── PUMBA fallback if pto_judge_to_stencil raises ValueError
     │       └── compute_stencil → fills formula cells
     │
-    ├── channel.print(f"Stencil computed. {n} cells filled.")
+    ├── channel.print(f"Stencil computed. {n_filled} cells filled.")
     │
     ├── stencil_dict = serialize_stencil(plan, results)  ← in stencil.py (NEW)
     │
@@ -79,7 +80,7 @@ EXISTS (migrate print → pto_out.print, no signature changes):
     src/stencil.py:76        print("⚠ VALUE RECONCILIATION") → pto_out.print(...)
 
 NEW:
-    src/tool_pms1.py         run_pms1_pipeline() wrapper
+    src/tools/tool_pms1.py   run_pms1_pipeline() wrapper (D8)
     src/stencil.py           serialize_stencil() function (added to existing file)
 ```
 
@@ -213,7 +214,7 @@ def _exec_pms1(params: dict) -> str:
     stencil = run_pms1_pipeline(firm, query, channel=channel)
 
     handle = registry.store(stencil, f"{firm} stencil")
-    _dump_asset(f"{_sanitize(firm)}_stencil_{handle.lstrip('$')}.json", stencil)
+    _dump_asset(f"{handle.lstrip('$')}_{_sanitize(firm)}_stencil.json", stencil)
 
     n_rows = len(stencil.get("rows", []))
     n_periods = len(stencil.get("periods", []))
@@ -234,7 +235,26 @@ Channel is created by execute_tool and passed to the wrapper.
 Wrapper uses it for operational prints. Internal PMS1 code
 (orchestrator.py, pto.py, stencil.py) uses module-level
 `pto_out = register("PMS1")` for its existing diagnostic prints
-— generic label, no signature changes to internal functions.
+-- generic label, no signature changes to internal functions.
+
+### Channel override (D13)
+
+`run_pms1_pipeline` wraps execution in `override_channel("PMS1", ch)` /
+`clear_override("PMS1")` so that internal PMS1 modules (pto.py,
+orchestrator.py) that use bare `register("PMS1")` get redirected to
+the firm-specific channel. This means `[PMS1-Best Buy]` appears for
+all output during that pipeline invocation, not just the wrapper's
+own prints. Override is scoped per-call and cleared in a finally block.
+
+### PUMBA fallback (spec 12)
+
+PUMBA is integrated as a fallback inside PMS1's `orchestrator.py`.
+When PTO retrieval produces results that `pto_judge_to_stencil`
+cannot parse (raises `ValueError`), orchestrator falls back to
+`run_pumba()` which uses LLM-reasoned chunk retrieval to find
+alternative source chunks, then re-runs the judge. This is
+PMS1-internal — the orchestrator harness never calls PUMBA as a
+separate tool. See spec 12 for PUMBA details.
 
 ## Internal user interaction
 
@@ -279,7 +299,7 @@ import threading
 
 from llama_index.core import VectorStoreIndex
 
-from src.harness.terminal_router import register, ToolChannel
+from src.harness.terminal_router import register, ToolChannel, override_channel, clear_override
 from src.config import Config
 from src.sekei import sekei
 from src.orchestrator import run
@@ -296,31 +316,37 @@ def run_pms1_pipeline(
     """Run full PMS1 pipeline for one firm. Returns stencil dict."""
     ch = channel or _default_channel
 
-    # ── Load deps ──────────────────────────────────────────
-    ch.print("Loading index...")
-    config = Config.from_env()
-    index = _load_index(config)
+    # Redirect bare "PMS1" prints from internal modules (pto.py,
+    # orchestrator.py, stencil.py) to the firm-specific channel.
+    override_channel("PMS1", ch)
+    try:
+        # ── Load deps ──────────────────────────────────────────
+        ch.print("Loading index...")
+        config = Config.from_env()
+        index = _load_index(config)
 
-    # ── Sekei ──────────────────────────────────────────────
-    ch.print("Sekei planning...")
-    full_query = f"{firm}: {query}"
-    plan = sekei(full_query, config)
-    n_cells = len(plan.cells)
-    n_batches = len(plan.batches)
-    ch.print(f"done. {n_cells} cells, {n_batches} batches.")
+        # ── Sekei ──────────────────────────────────────────────
+        ch.print("Sekei planning...")
+        full_query = f"{firm}: {query}"
+        plan = sekei(full_query, config)
+        n_cells = len(plan.cells)
+        n_batches = len(plan.batches)
+        ch.print(f"done. {n_cells} cells, {n_batches} batches.")
 
-    # ── PTO + Stencil ─────────────────────────────────────
-    # Note: per-batch progress prints come from internal PMS1 code
-    # via module-level pto_out (generic [PMS1] label). The wrapper
-    # only prints start/end messages.
-    ch.print(f"Running {n_batches} batches...")
-    results = run(plan, index, config)
+        # ── PTO + Stencil ─────────────────────────────────────
+        # Note: per-batch progress prints come from internal PMS1 code
+        # via module-level pto_out — override_channel redirects these
+        # to the firm-specific channel (D13).
+        ch.print(f"Running {n_batches} batches...")
+        results = run(plan, index, config)
 
-    n_filled = len(results)
-    ch.print(f"Stencil computed. {n_filled} cells filled.")
+        n_filled = len(results)
+        ch.print(f"Stencil computed. {n_filled} cells filled.")
 
-    # ── Serialize ─────────────────────────────────────────
-    return serialize_stencil(plan, results)
+        # ── Serialize ─────────────────────────────────────────
+        return serialize_stencil(plan, results)
+    finally:
+        clear_override("PMS1")
 
 
 _index_lock = threading.Lock()
@@ -335,8 +361,8 @@ def _load_index(config: Config) -> VectorStoreIndex:
     with _index_lock:
         if _cached_index is not None:  # double-check after acquiring lock
             return _cached_index
-        from src.index_store import load_index
-        _cached_index = load_index(config)
+        from src.index_store import IndexManager
+        _cached_index = IndexManager(config).load_or_build()
         return _cached_index
 ```
 
@@ -348,14 +374,14 @@ def _load_index(config: Config) -> VectorStoreIndex:
 | `src/orchestrator.py` | `run()` — PTO lanes + stencil eval |
 | `src/stencil.py` | `serialize_stencil()` (NEW), `CellResult` |
 | `src/config.py` | `Config.from_env()` |
-| `src/index_store.py` | `load_index()` |
+| `src/index_store.py` | `IndexManager.load_or_build()` (D3) |
 | `src/harness/terminal_router.py` | `register()`, `ToolChannel` |
 
 ## File locations
 
 ```
-PSOAS/src/tool_pms1.py              wrapper (NEW)
-Poony_Multiretrieval_S1/src/stencil.py   serialize_stencil() added (MODIFIED)
+src/tools/tool_pms1.py                     wrapper (D8)
+src/scripts/Poony_Multiretrieval_S1/src/stencil.py   serialize_stencil() added
 ```
 
 ## Ideal demo
@@ -389,7 +415,8 @@ diagnostic prints. Both go through TerminalRouter.
 - **Channel injection depth.** Zero internal signature changes.
   Wrapper holds channel for operational prints. Internal PMS1 code
   uses module-level `register("PMS1")` for diagnostics.
-- **Index/config loading.** On first call, no caching abstraction.
-  Optimization deferred.
+- **Index/config loading.** Module-level `_cached_index` with
+  double-check locking (`_index_lock`). `_load_index()` caches after
+  first call; parallel callers wait on the lock then return cached.
 - **Print migration.** 3 existing print() calls → module-level
   pto_out.print(). Generic [PMS1] label. No signature changes.

@@ -29,13 +29,13 @@ LLM-orchestrated tools with CLI user interaction at any depth.
 
 | # | Spec | What it covers | Status |
 |---|---|---|---|
-| 11 | `11_repl_loop.md` | Outer REPL: interactive prompt, follow-ups, session state persistence, exit handling | TODO |
+| 11 | `11_repl_loop.md` | Outer REPL: interactive prompt, follow-ups, session state persistence, exit handling | DONE |
 
 ### Layer 1c: PMS1-internal retrieval
 
 | # | Spec | What it covers | Status |
 |---|---|---|---|
-| 12 | `12_PUMBA.md` | PUMBA fallback: Dailo/Gulei/Leng 3-tier LLM retrieval when PTO BM25 fails, orchestrator.py integration | TODO |
+| 12 | `12_PUMBA.md` | PUMBA fallback: Dailo/Gulei/Leng 3-tier LLM retrieval when PTO BM25 fails, orchestrator.py integration | DONE |
 
 ### Layer 2: Tool contracts (one per tool)
 
@@ -50,10 +50,18 @@ toolified.
 
 | # | Spec | Base built? | Toolified? | Status |
 |---|---|---|---|---|
-| 06 | `06_tool_pms1.md` | Yes (`Poony_Multiretrieval_S1/src/`) | No | DONE |
-| 07 | `07_tool_pteca.md` | No | No | DONE |
-| 08 | `08_tool_stencil2chart.md` | Yes (`stencil2chart.py`) | No | DONE |
-| 09 | `09_tool_askuser.md` | N/A (orchestrator-level only) | No | DONE |
+| 06 | `06_tool_pms1.md` | Yes (`Poony_Multiretrieval_S1/src/`) | Yes | DONE |
+| 07 | `07_tool_pteca.md` | Yes (`src/tools/tool_pteca.py`) | Yes | DONE |
+| 08 | `08_tool_stencil2chart.md` | Yes (`src/scripts/stencil2chart.py`) | Yes | DONE |
+| 09 | `09_tool_askuser.md` | N/A (orchestrator-level only) | Yes | DONE |
+
+**Additional tools (no separate spec — live in `execute_tool.py`):**
+
+| Tool | Description | Status |
+|---|---|---|
+| `write_session_md` | Write markdown to session dir with `{{embed:$var_N}}` marker resolution | DONE |
+| `read_session_md` | Read file from session dir | DONE |
+| `inspect_var` | Registry inspection (specced in `03_opaque_registry.md`) | DONE |
 
 ### Build order rationale
 
@@ -146,29 +154,29 @@ $ python psoas.py "Chart Best Buy and Amcor gross margins for FY2022 and FY2023"
 [PMS1] PTO judge... tokens in=2800 out=390.
 [PMS1] Stencil computed. 5 cells filled.
 
-[ORCHESTRATOR] Running PTECA for Best Buy stencil...
+[ORCHESTRATOR] Running PTECA with both stencils...
 
-[PTECA] Stencil has 5 rows: Revenue, Gross Profit, Gross Margin,
-        Net Income, Net Profit Margin.
-[PTECA] User asked for gross margins only. Drop Revenue, Gross Profit,
-        Net Income, Net Profit Margin?
-> yes but keep net margin too
+[PTECA-Best Buy+Amcor] 2 firms: Best Buy, Amcor.
+[PTECA-Best Buy+Amcor] Here are some chart layout options:
 
-[PTECA] Keeping: Gross Margin, Net Profit Margin.
-[PTECA] Both are %. 1 chart.
-[PTECA] Done.
+  Option A: One chart per firm (2 charts)
+    Best Buy:  Gross Margin %, Net Margin %
+    Amcor:     Gross Margin %, Net Margin %
 
-[ORCHESTRATOR] Running PTECA for Amcor stencil...
+  Option B: One comparison chart (1 chart)
+    All firms on same axes
 
-[PTECA] Same structure. Keeping Gross Margin, Net Profit Margin?
-> yes
+  Option C: Something else?
 
-[PTECA] Done.
+> option B, just gross margin
+
+[PTECA-Best Buy+Amcor] Got it. 1 chart: Gross Margin comparison.
+[PTECA-Best Buy+Amcor] Done.
 
 [ORCHESTRATOR] Rendering charts...
 
-[ORCHESTRATOR] Saved: PSOAS/temp/sessions/20260714170844/output/stencil2charted_1.svg
-[ORCHESTRATOR] Saved: PSOAS/temp/sessions/20260714170844/output/stencil2charted_2.svg
+[ORCHESTRATOR] Saved: temp/sessions/20260714170844/output/stencil2charted_1.svg
+[ORCHESTRATOR] Saved: temp/sessions/20260714170844/output/stencil2charted_2.svg
 [ORCHESTRATOR] Done. 2 charts saved.
 ```
 
@@ -176,14 +184,14 @@ $ python psoas.py "Chart Best Buy and Amcor gross margins for FY2022 and FY2023"
 
 ## What already exists
 
-| Component | Location | Base built? | Toolified? | Notes |
-|---|---|---|---|---|
-| PMS1 pipeline | `Poony_Multiretrieval_S1/src/` (sekei, pto, orchestrator, stencil) | Yes | No | Needs tool wrapper: JSON schema, execute_tool branch, ToolChannel integration, serialize_stencil helper |
-| stencil2chart | `Poony_Multiretrieval_S1/src/stencil2chart.py` | Yes | No | Needs tool wrapper. Currently uses raw `print()`/`input()` for gap prompt — must migrate to ToolChannel |
-| stencil2chart README | `Poony_Multiretrieval_S1/README_stencil2chart.md` | N/A | N/A | Input/output contract doc |
-| PTECA | not built | No | No | Designed in conversation. Internal agent loop. |
-| Terminal router | not built | No | N/A | Designed, sketch in CLI routing doc |
-| Harness (agent loop, registry, execute_tool) | not built | No | N/A | Designed, sketch in harness doc |
+| Component | Location | Status | Notes |
+|---|---|---|---|
+| PMS1 pipeline | `src/scripts/Poony_Multiretrieval_S1/src/` (sekei, pto, orchestrator, stencil) | Built + Toolified | Tool wrapper in `src/tools/tool_pms1.py`. PUMBA fallback in `pumba.py`. |
+| stencil2chart | `src/scripts/stencil2chart.py` (PSOAS-modified copy) | Built + Toolified | ToolChannel param, `matplotlib.use("Agg")`, direct-line labels |
+| PTECA | `src/tools/tool_pteca.py` | Built + Toolified | Multi-stencil, always-ask, ASCII chart previews (D14 rewrite) |
+| Terminal router | `src/harness/terminal_router.py` | Built | Rich integration, thread-local overrides, harvest_logs |
+| Harness | `src/harness/` (agent_loop, opaque_registry, execute_tool, system_prompt) | Built | Outer REPL, transcript enrichment, session I/O tools |
+| PUMBA | `src/scripts/Poony_Multiretrieval_S1/src/pumba.py` | Built | Dailo/Gulei/Leng 3-tier LLM retrieval fallback |
 
 ### Reference docs (teaching, not specs)
 
@@ -194,14 +202,25 @@ $ python psoas.py "Chart Best Buy and Amcor gross margins for FY2022 and FY2023"
 
 ---
 
+## Spec status
+
+All specs were originally prescriptive (written before code). They
+have been reconciled with the actual implementation as of 2026-07-16.
+Specs now REFLECT the architecture — they are documentation of what
+IS, not what should be.
+
+Deviations from specs during implementation are logged in:
+- `ClaudenoDiscretion.md` (D1–D15): harness-wide decisions
+- `Specs/12a_PUMBAnoDiscretion.md` (D1–D11): PUMBA-specific decisions
+
+Key import resolution mechanism: `src/__init__.py` extends `__path__`
+to search `src/scripts/` then `src/scripts/Poony_Multiretrieval_S1/src/`.
+All `from src.XXX import ...` imports resolve through this chain.
+PSOAS-modified copies (config.py, llm.py, stencil2chart.py) shadow
+PMS1 originals. See D1/D8 in ClaudenoDiscretion.md.
+
 ## Handoff notes
 
-- This session designed stencil2chart (built + tested), PTECA (designed),
-  harness architecture (v1 naive → v2 opaque handles + sub-tool CLI),
-  terminal router (designed with implementation sketch).
-- Teaching docs in `Poony_Multiretrieval_S1/idea/` explain the WHY and
-  evolution (v1→v2). Specs in this directory are the WHAT — contracts
-  to build from.
 - PMS1 is a single-firm pipeline. Multi-firm = orchestrator calls PMS1
   N times. PMS1 itself doesn't change.
 - PTECA is an internal agent loop (its own messages list, while loop,
@@ -210,5 +229,8 @@ $ python psoas.py "Chart Best Buy and Amcor gross margins for FY2022 and FY2023"
   No raw `print()`/`input()` anywhere.
 - Opaque variable handles (`$var_N`) prevent context bloat in
   orchestrator LLM. `_store`/`_resolve` registry in harness.py.
+- PUMBA is currently PMS1-internal (called by orchestrator.py when
+  PTO fails). Not yet exposed as an orchestrator-level tool — future:
+  orchestrator may specify PMS1 call types to PUMBA directly.
 - Sequential execution for MVP. Parallel (threading + stdin broker)
   is designed in terminal_router but not MVP-critical.

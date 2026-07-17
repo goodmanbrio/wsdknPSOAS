@@ -32,7 +32,7 @@ execute_tool("ask_user", {"question": "Which firms should I run?"})
     ▼
 _exec_ask_user(params)
     │
-    ├── answer = _orchestrator_channel.input("Which firms should I run?")
+    ├── answer = _orchestrator_channel.input("Which firms should I run?", markdown=True)
     │       │
     │       ├── TerminalRouter displays:
     │       │     [ORCHESTRATOR] Which firms should I run?
@@ -48,7 +48,7 @@ _exec_ask_user(params)
 ```python
 def _exec_ask_user(params: dict) -> str:
     question = params["question"]
-    answer = _orchestrator_channel.input(question)
+    answer = _orchestrator_channel.input(question, markdown=True)
     return f"User answered: {answer}"
 ```
 
@@ -64,10 +64,10 @@ ask the user high-level questions before or during execution:
 - "Do you want charts or just the stencil data?"
 - "FY2022 and FY2023, or all available years?"
 
-Sub-tool user interaction (PMS1's "Relax FY filter?", PTECA's
-"Keep Revenue?") goes through each tool's own ToolChannel — NOT
-through this tool. The orchestrator LLM never sees sub-tool
-conversations.
+Sub-tool user interaction (e.g. PMS1's planned "Relax FY filter?"
+— not yet built; PTECA's `pteca_ask_user` turns; stencil2chart's
+gap prompt) goes through each tool's own ToolChannel — NOT through
+this tool. The orchestrator LLM never sees sub-tool conversations.
 
 ## ToolChannel label
 

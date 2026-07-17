@@ -18,19 +18,21 @@ router.
                     │  TerminalRouter     │
                     │  (singleton)        │
                     │                     │
-                    │  _input_queue ──────┤ Queue[(label, question, AnswerSlot)]
+                    │  _input_queue ──────┤ Queue[(label, question, AnswerSlot, markdown)]
                     │                     │   tools post here when they need input
                     │                     │
-                    │  _buffer ───────────┤ list[(label, msg)]
+                    │  _buffer ───────────┤ list[(label, msg, markdown)]
                     │                     │   prints held while input is active
                     │                     │
                     │  _active_input ─────┤ bool
                     │                     │   True = someone owns stdin right now
                     │                     │
-                    │  .print(label, msg) │
-                    │  .input(label, q)   │
-                    │  ._ui_loop()        │
-                    └──┬──────┬──────┬────┘
+                    │  .print(label, msg)    │
+                    │  .input(label, q)      │
+                    │  .start_spinner(label)  │
+                    │  .stop_spinner()        │
+                    │  ._ui_loop()            │
+                    └──┬──────┬──────┬────────┘
                        │      │      │
               register │      │      │ register
                "PMS1"  │      │      │ "PTECA"
@@ -38,6 +40,7 @@ router.
                  ToolChannel   │  ToolChannel
                  .print(msg)   │  .print(msg)
                  .input(q)     │  .input(q)
+                 _log: list    │  _log: list
                        │       │       │
                        ▼       │       ▼
                  src/tools/    │  src/tools/
@@ -90,20 +93,39 @@ from src.harness.terminal_router import register
 pto_out = register("PMS1")
 ```
 
-### ToolChannel.print(msg: str) → None
+### ToolChannel fields
+
+```python
+class ToolChannel:
+    def __init__(self, label: str, router: "TerminalRouter"):
+        self.label = label
+        self._router = router
+        self._log: list[str] = []   # D12 transcript enrichment
+```
+
+`_log` accumulates every message passed to `print()`. Harvested
+by `harvest_logs()` at transcript-write time (see below).
+
+### ToolChannel.print(msg: str, markdown: bool = False) → None
 
 Post a message to the terminal. Auto-prefixed with `[label]`.
 
 | Param | Type | Description |
 |---|---|---|
 | `msg` | `str` | Message to display. No label needed — ToolChannel adds it. |
+| `markdown` | `bool` | If True, msg body is rendered as Markdown via rich. Default False. |
+
+Body: resolves override target via `_get_override(self) or self`
+(see thread-local overrides below), appends `msg` to `target._log`
+(the resolved override target's log, not necessarily `self._log`),
+then calls `_router.print(target.label, msg, markdown=markdown)`.
 
 ```python
 pto_out.print("Loading index...")
 # terminal shows: [PMS1] Loading index...
 ```
 
-### ToolChannel.input(question: str) → str
+### ToolChannel.input(question: str, markdown: bool = False) → str
 
 Ask the user a question. Blocks the calling thread until the user
 answers. Auto-prefixed with `[label]`.
@@ -111,6 +133,10 @@ answers. Auto-prefixed with `[label]`.
 | Param | Type | Description |
 |---|---|---|
 | `question` | `str` | Question to display. |
+| `markdown` | `bool` | If True, question is rendered as Markdown via rich. Default False. |
+
+Body: resolves override target via `_get_override(self) or self`,
+then calls `_router.input(target.label, question, markdown=markdown)`.
 
 Returns the user's answer as a string.
 
@@ -143,7 +169,7 @@ to the requesting tool thread.
 ```python
 @dataclass
 class AnswerSlot:
-    _event: threading.Event     # set() when answer is ready
+    _event: threading.Event = field(default_factory=threading.Event)
     value: str = ""             # filled by UI thread before set()
 
     def wait(self):
@@ -159,33 +185,43 @@ Singleton. Created once at module import.
 
 ```python
 class TerminalRouter:
-    _input_queue: Queue         # (label, question, AnswerSlot)
-    _buffer: list               # (label, msg) — held during active input
+    _console: Console           # rich Console instance, passed via __init__(con)
+    _input_queue: Queue         # (label, question, AnswerSlot, markdown)
+    _buffer: list[tuple[str, str, bool]]  # (label, msg, markdown) — held during active input
     _active_input: bool         # True while a question is displayed
     _lock: threading.Lock       # protects _buffer and _active_input
     _is_dead: bool              # True after EOF — all future input() returns ""
+    _spinner: Status | None     # active rich Status, if any (spec 10)
 ```
 
-#### .print(label, msg)
+Constructor: `TerminalRouter(con: Console)` — stores `con` as
+`self._console`.
+
+#### .print(label: str, msg: str, markdown: bool = False)
 
 ```
 with _lock:
     if _active_input:
-        _buffer.append((label, msg))
+        _buffer.append((label, msg, markdown))
     else:
-        print(f"[{label}] {msg}") to real stdout
+        _styled_print(label, msg, markdown)
 ```
 
-#### .input(label, question) → str
+Uses `_styled_print()` (extracted helper, see spec 10) instead
+of raw `print()`.
+
+#### .input(label: str, question: str, markdown: bool = False) → str
 
 ```
 if _is_dead:
     return ""               ← EOF already received, no-op
 create AnswerSlot
-post (label, question, answer_slot) to _input_queue
+post (label, question, answer_slot, markdown) to _input_queue
 answer_slot.wait()          ← blocks calling thread
 return answer_slot.value
 ```
+
+Queue tuple is 4-element: `(label, question, AnswerSlot, markdown)`.
 
 #### ._ui_loop()
 
@@ -195,20 +231,32 @@ real `input()`.
 
 ```
 while True:
-    label, question, answer_slot = _input_queue.get()
+    label, question, answer_slot, md = _input_queue.get()
+
+    # stop spinner so prompt renders cleanly (spec 10)
+    self.stop_spinner()
 
     # set active
-    _active_input = True
+    with _lock:
+        _active_input = True
 
     # show pending count
     pending = _input_queue.qsize() + 1
     if pending > 1:
-        print(f"[{pending} questions pending — answering 1 of {pending}]")
+        self._console.print(f"[dim][{pending} questions pending — answering 1 of {pending}][/dim]")
 
-    # display question
-    print(f"\n[{label}] {question}")
+    # display question (if md, render as Markdown via rich)
+    style = _style_for(label)
+    if md:
+        self._console.print(Group(
+            Text(f"[{label}]", style=style),
+            Markdown(question),
+        ))
+    else:
+        self._console.print(f"\n[{style}]\\[{label}][/{style}] {question}")
+
     try:
-        answer = input("> ")
+        answer = self._console.input("[bold]> [/]")
     except EOFError:
         # stdin closed (Ctrl+D) — mark dead, unblock requester
         # with empty string, drain remaining queue, exit loop
@@ -216,12 +264,16 @@ while True:
         answer = ""
         answer_slot.value = answer
         answer_slot.set()
-        _active_input = False
+        with self._lock:
+            _active_input = False
         # drain queue so no thread deadlocks on wait()
         while not _input_queue.empty():
-            _, _, slot = _input_queue.get_nowait()
-            slot.value = ""
-            slot.set()
+            try:
+                _, _, slot, _ = _input_queue.get_nowait()
+                slot.value = ""
+                slot.set()
+            except Exception:
+                break
         break
 
     # unblock requester
@@ -233,8 +285,11 @@ while True:
         _active_input = False
         to_flush = list(_buffer)
         _buffer.clear()
-    for buf_label, buf_msg in to_flush:
-        print(f"[{buf_label}] {buf_msg}")
+    if to_flush:
+        self._console.print("[dim]--- buffered while you were typing ---[/dim]")
+        for buf_label, buf_msg, buf_md in to_flush:
+            _styled_print(buf_label, buf_msg, buf_md)
+        self._console.print("[dim]---[/dim]")
 ```
 
 ## Behavior: normal print (no input active)
@@ -248,7 +303,8 @@ TerminalRouter.print("PMS1", "Loading index...")
     ├── _active_input? NO
     │
     ▼
-real print("[PMS1] Loading index...")    ← immediate
+_styled_print("PMS1", "Loading index...")    ← immediate
+    → _console.print(f"[bold green]\\[PMS1][/bold green] Loading index...")
 ```
 
 ## Behavior: print during active input (buffered)
@@ -263,7 +319,7 @@ Thread 2's print:
         ├── _active_input? YES (Thread 1 owns stdin)
         │
         ▼
-    _buffer.append(("PMS1-Amcor", "42 chunks."))   ← held, not printed
+    _buffer.append(("PMS1-Amcor", "42 chunks.", False))  ← held, not printed
 
 User answers Thread 1's question:
     > y
@@ -271,7 +327,7 @@ User answers Thread 1's question:
         ├── answer_slot.set()          ← unblocks Thread 1
         ├── _active_input = False
         ├── flush _buffer:
-        │     print("[PMS1-Amcor] 42 chunks.")     ← now it appears
+        │     _styled_print("PMS1-Amcor", "42 chunks.", False)  ← now it appears
         ▼
 ```
 
@@ -299,8 +355,6 @@ _ui_loop processes slot_1 first:
 
 _ui_loop processes slot_2:
 
-    [1 question pending — answering 1 of 1]
-
     [PMS1-Amcor] Relax FY for Amcor?
     > n
 
@@ -310,16 +364,16 @@ Thread 2 resumes with "n".
 
 ## Dependencies
 
-None. Standard library only:
-
-- `threading` (Lock, Event)
+- `threading` (Lock, Event, local)
 - `queue` (Queue)
 - `dataclasses` (dataclass)
+- `rich` (Console, Text, Group, Markdown, Status, Panel) — layered by spec 10
+  Note: `Panel` is imported but unused in terminal_router.py — it is used in agent_loop.py.
 
 ## File location
 
 ```
-PSOAS/src/harness/terminal_router.py
+src/harness/terminal_router.py
 ```
 
 ## Ideal demo
@@ -379,6 +433,85 @@ $ python psoas.py "Chart Best Buy and Amcor gross margins FY2022-2023"
 [ORCHESTRATOR] Both stencils ready. Running PTECA...
 ```
 
+## Thread-local channel overrides (D13)
+
+PMS1 internal modules use module-level `register("PMS1")` to get a
+default channel. When the orchestrator dispatches firm-specific work
+on worker threads, it needs those modules' output to route to a
+firm-specific channel (e.g. `"PMS1-Best Buy"`) without changing the
+module-level variable.
+
+Solution: thread-local overrides stored in `threading.local()`.
+
+```python
+_thread_overrides = threading.local()
+
+def override_channel(label: str, channel: ToolChannel):
+    """Set a thread-local override: any ToolChannel with the given
+    base label will redirect to `channel` on this thread."""
+    if not hasattr(_thread_overrides, "map"):
+        _thread_overrides.map = {}
+    _thread_overrides.map[label] = channel
+
+def clear_override(label: str):
+    """Remove the thread-local override for `label`."""
+    if hasattr(_thread_overrides, "map"):
+        _thread_overrides.map.pop(label, None)
+
+def _get_override(channel: ToolChannel) -> ToolChannel | None:
+    """Return thread-local override for this channel's label, or None."""
+    overrides = getattr(_thread_overrides, "map", {})
+    return overrides.get(channel.label)
+# Call sites use `or self` fallback:
+#   target = _get_override(self) or self
+```
+
+`ToolChannel.print` and `ToolChannel.input` both call
+`_get_override(self) or self` to resolve the actual target before
+delegating to `_router`.
+
+## harvest_logs() (D12)
+
+Iterates all registered channels, clears ALL `_log` lists
+(including ORCHESTRATOR), but excludes ORCHESTRATOR from the
+returned dict (its output is already captured as LLM response
+content in the transcript). Used at transcript-write time to
+capture per-tool output.
+
+```python
+def harvest_logs() -> dict[str, list[str]]:
+    """Drain and return accumulated logs from all tool channels.
+    Clears all logs including ORCHESTRATOR, but excludes
+    ORCHESTRATOR from the returned dict."""
+    with _channels_lock:
+        result = {}
+        for label, ch in _channels.items():
+            if ch._log:
+                if label != "ORCHESTRATOR":
+                    result[label] = list(ch._log)
+                ch._log.clear()
+        return result
+```
+
+## Symbols added post-spec-01
+
+Summary of all public/module-level symbols in terminal_router.py
+that were introduced by later specs or dev iterations:
+
+| Symbol | Added by | Description |
+|---|---|---|
+| `console = Console()` | spec 10 | Rich console singleton. All terminal output goes through this. |
+| `_thread_overrides = threading.local()` | D13 | Thread-local storage for channel overrides. |
+| `LABEL_STYLES` dict | spec 10 + spec 12 | Maps label prefixes to rich styles. 5 entries: ORCHESTRATOR, PMS1, PTECA, S2C, PUMBA. |
+| `_style_for(label)` | spec 10 | Look up rich style by label prefix (splits on `-`). Falls back to `"bold white"`. |
+| `_get_override(channel)` | D13 | Resolve thread-local redirect for a ToolChannel. Returns `None` if no override set (call sites use `or self` fallback). |
+| `override_channel(label, channel)` | D13 | Set thread-local override: calls from `label`'s channel redirect to `channel` on this thread. |
+| `clear_override(label)` | D13 | Remove thread-local override for `label`. |
+| `harvest_logs()` | D12 | Drain all channel `_log` lists (including ORCHESTRATOR). Returns `{label: [msgs]}`, excludes ORCHESTRATOR from return dict. |
+| `start_spinner(label)` | spec 10 | Start rich Status spinner. Stops any existing spinner first. |
+| `stop_spinner()` | spec 10 | Stop active spinner. Idempotent. |
+| `_styled_print(label, msg, markdown)` | spec 10 | Factored helper for styled output. When `markdown=True`, applies `msg = msg.replace("\n", "  \n")` for CommonMark hard-break compatibility, then renders via `Group(Text(...), Markdown(...))`. |
+
 ## Resolved questions
 
 - **Threading model.** Build threaded from the start (Queue +
@@ -386,7 +519,7 @@ $ python psoas.py "Chart Best Buy and Amcor gross margins FY2022-2023"
   `0_CLIrouting.md` design. UI loop starts at module import as
   a daemon thread:
   ```python
-  _router = TerminalRouter()
+  _router = TerminalRouter(console)
   threading.Thread(target=_router._ui_loop, daemon=True).start()
   ```
   Blocks on `_input_queue.get()` until first input request — no

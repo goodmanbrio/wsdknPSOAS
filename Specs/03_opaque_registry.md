@@ -29,7 +29,7 @@ execute_tool returns tool_result to LLM:
 
               ─── LLM never sees the stencil dict ───
 
-Later, LLM calls: run_pteca(stencil="$var_1", query="...")
+Later, LLM calls: run_pteca(stencils=["$var_1"], query="...")
     │
     ▼
 execute_tool receives input with "$var_1"
@@ -68,6 +68,8 @@ opaque_registry.py
 ```python
 _counter: int = 0
 _registry: dict[str, dict] = {}
+_recent: list[tuple[str, str, Any]] = []   # (handle, description, data)
+                                            # transcript enrichment (D12)
 
 # Each entry:
 _registry["$var_1"] = {
@@ -104,23 +106,40 @@ Look up data by handle.
 
 Returns the stored data object.
 
-Raises `KeyError` if handle does not exist. Caller (`execute_tool`)
-catches this and returns error string to LLM:
-`"Error: handle $var_99 does not exist. Available: $var_1 (Best Buy stencil), $var_2 (Amcor stencil)"`
+Raises `KeyError` if handle does not exist. The error propagates
+through `_resolve_handles` → `execute_tool()` (both uncaught) →
+`_safe_execute()` in `agent_loop.py` (caught there), which returns
+error string to LLM:
+`"Handle $var_99 does not exist. Available:\n$var_1: Best Buy stencil\n$var_2: Amcor stencil"`
+
+(Newline-separated via `list_vars()`, not comma-separated.)
 
 ```python
 data = registry.resolve("$var_1")
 # data = <the stencil dict>
 ```
 
+### harvest_recent() → list[tuple[str, str, Any]]
+
+Drain the `_recent` buffer under lock, return batch. Called from
+`agent_loop` after tool dispatch returns, before `_dump_turn`.
+Each entry is `(handle, description, data)` — what was stored
+since the last harvest. Used for transcript enrichment (D12).
+
+```python
+batch = registry.harvest_recent()
+# batch = [("$var_1", "Best Buy stencil", {...})]
+# _recent is now empty
+```
+
 ### reset() → None
 
-Clear all entries and reset counter to 0. Called once at the top
-of `run_harness()` so each session starts clean.
+Clear all entries, recent buffer, and reset counter to 0. Called
+once at the top of `run_harness()` so each session starts clean.
 
 ```python
 registry.reset()
-# _counter = 0, _registry = {}
+# _counter = 0, _registry = {}, _recent = []
 ```
 
 ### list_vars() → str
@@ -234,7 +253,7 @@ Per `run_harness()` call. `reset()` is called at the top of
 `run_harness()`:
 
 ```python
-def run_harness(user_query: str):
+def run_harness(first_query: str | None = None):
     registry.reset()       # ← clean slate
     # ... while loop ...
 ```
@@ -266,18 +285,20 @@ Which tools persist to disk:
 
 | Tool | Persist? | Filename |
 |---|---|---|
-| run_pms1 | Yes | `{firm}_stencil_{var_N}.json` |
-| run_pteca | Yes | `{firm}_chart_inputs_{var_N}.json` |
+| run_pms1 | Yes | `{var_N}_{firm}_stencil.json` |
+| run_pteca | Yes | `{firms_slug}_chart_inputs_{var_N}.json` |
 | run_stencil2chart | No (already produces an SVG file) | — |
 | inspect_var | No | — |
 | ask_user | No | — |
+| write_session_md | Yes | user-specified filename in session dir |
+| read_session_md | No (reads only) | — |
 
 Filenames are derived by `execute_tool` from tool name + input
 params + registry handle tag (e.g. `Best_Buy_stencil_var_1.json`).
 Handle tag prevents collision on duplicate calls. Deterministic,
 not LLM-generated.
 
-Asset dir: `PSOAS/temp/sessions/YYYYMMDDHHMMSS/assets/`
+Asset dir: `temp/sessions/YYYYMMDDHHMMSS/assets/`
 (same session dir as transcript from 02_agent_loop).
 
 ## Implementation sketch
@@ -291,6 +312,7 @@ class OpaqueRegistry:
     def __init__(self):
         self._counter: int = 0
         self._registry: dict[str, dict] = {}
+        self._recent: list[tuple[str, str, Any]] = []
         self._lock = threading.RLock()
 
     def store(self, data: Any, description: str) -> str:
@@ -301,6 +323,7 @@ class OpaqueRegistry:
                 "data": data,
                 "description": description,
             }
+            self._recent.append((handle, description, data))
         return handle
 
     def resolve(self, handle: str) -> Any:
@@ -331,10 +354,17 @@ class OpaqueRegistry:
     def dump(self, handle: str) -> str:
         return str(self.resolve(handle))
 
+    def harvest_recent(self) -> list[tuple[str, str, Any]]:
+        with self._lock:
+            batch = list(self._recent)
+            self._recent.clear()
+            return batch
+
     def reset(self):
         with self._lock:
             self._counter = 0
             self._registry.clear()
+            self._recent.clear()
 
 
 # ── Singleton ──────────────────────────────────────────────────
@@ -348,7 +378,7 @@ registry = OpaqueRegistry()
 ## File location
 
 ```
-PSOAS/src/harness/opaque_registry.py
+src/harness/opaque_registry.py
 ```
 
 ## Resolved questions
@@ -365,6 +395,7 @@ PSOAS/src/harness/opaque_registry.py
   tool contract. Three modes: list, preview (500 chars), full.
   System prompt instructs escalation order.
 - **Error on bad handle.** `resolve()` raises KeyError with list
-  of available handles. `execute_tool` catches and returns error
-  string to LLM.
+  of available handles. Propagates through `execute_tool()` uncaught;
+  caught by `_safe_execute()` in `agent_loop.py`, which returns
+  error string to LLM.
 - **Lifetime.** Per `run_harness()` call. `reset()` at session start.

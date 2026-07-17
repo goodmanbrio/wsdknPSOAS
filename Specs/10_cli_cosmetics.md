@@ -8,19 +8,16 @@ spinners, styled prompts. No logic changes — purely cosmetic.
 ```
 TerminalRouter (01)
     │
-    ├── currently uses: print(), input()
+    ├── uses: rich.console.Console for all terminal I/O
     │
-    ├── after this spec: rich.console.Console
-    │
-    └── affects: _ui_loop(), .print(), buffered flush
+    └── affects: _ui_loop(), _styled_print(), buffered flush
 ```
 
 ```
 agent_loop (02) / PTECA loop (07)
     │
-    ├── currently: silent during client.messages.create()
-    │
-    └── after this spec: spinner while waiting for LLM response
+    └── spinner shown while waiting for LLM response
+        (_router.start_spinner / stop_spinner)
 ```
 
 ## Dependencies
@@ -46,6 +43,7 @@ LABEL_STYLES = {
     "PMS1":         "bold green",
     "PTECA":        "bold yellow",
     "S2C":          "bold magenta",
+    "PUMBA":        "bold red",
 }
 
 def _style_for(label: str) -> str:
@@ -67,57 +65,71 @@ Terminal output:
 
 ## TerminalRouter changes
 
-### .print(label, msg) — styled output
+### .print(label, msg, markdown) — styled output
+
+Delegates to `_styled_print()`, an extracted helper method:
 
 ```python
-# Before (01_terminal_router.md):
-print(f"[{label}] {msg}")
-
-# After:
-style = _style_for(label)
-console.print(f"[{style}]\\[{label}][/{style}] {msg}")
+def _styled_print(self, label: str, msg: str, markdown: bool = False):
+    style = _style_for(label)
+    if markdown:
+        msg = msg.replace("\n", "  \n")  # CommonMark hard-break fix
+        label_text = Text(f"[{label}]", style=style)
+        self._console.print(Group(label_text, Markdown(msg)))
+    else:
+        self._console.print(f"[{style}]\\[{label}][/{style}] {msg}")
 ```
 
-When buffered (during active input), same styling applied at
-flush time.
+When `markdown=True`, the `\n` → `  \n` substitution ensures
+CommonMark hard-break rendering (two trailing spaces). Uses
+`Group(Text(...), Markdown(...))` so the label renders in the
+tool's color and the body renders as rich Markdown. When buffered
+(during active input), same styling applied at flush time via the
+same helper.
 
 ### ._ui_loop() — styled input prompt
 
 ```python
-# Before:
-print(f"\n[{label}] {question}")
-answer = input("> ")
+with self._lock:
+    self._active_input = True
 
-# After:
 style = _style_for(label)
-console.print(f"\n[{style}]\\[{label}][/{style}] {question}")
-answer = console.input("[bold]> [/]")
+if md:
+    self._console.print(Group(
+        Text(f"[{label}]", style=style),
+        Markdown(question),
+    ))
+else:
+    self._console.print(f"\n[{style}]\\[{label}][/{style}] {question}")
+answer = self._console.input("[bold]> [/]")
 ```
+
+The `md` flag comes from the 4-tuple `(label, question,
+answer_slot, md)` unpacked from `_input_queue`.
 
 ### Buffered flush — separator
 
-```python
-# Before:
-for buf_label, buf_msg in self._buffer:
-    print(f"[{buf_label}] {buf_msg}")
+Buffer is snapshotted under lock into `to_flush` (not iterated
+from `self._buffer` directly). Each entry is a 3-tuple
+`(label, msg, markdown)`.
 
-# After:
-if self._buffer:
-    console.print("[dim]--- buffered while you were typing ---[/dim]")
-    for buf_label, buf_msg in self._buffer:
-        style = _style_for(buf_label)
-        console.print(f"[{style}]\\[{buf_label}][/{style}] {buf_msg}")
-    console.print("[dim]---[/dim]")
+```python
+with self._lock:
+    self._active_input = False
+    to_flush = list(self._buffer)
+    self._buffer.clear()
+if to_flush:
+    self._console.print("[dim]--- buffered while you were typing ---[/dim]")
+    for buf_label, buf_msg, buf_md in to_flush:
+        self._styled_print(buf_label, buf_msg, buf_md)
+    self._console.print("[dim]---[/dim]")
 ```
 
 ### Pending questions count
 
 ```python
-# Before:
-print(f"[{pending} questions pending — answering 1 of {pending}]")
-
-# After:
-console.print(f"[dim][{pending} questions pending — answering 1 of {pending}][/dim]")
+# Only shown when multiple questions pending (guard: pending > 1)
+self._console.print(f"[dim][{pending} questions pending — answering 1 of {pending}][/dim]")
 ```
 
 ## Spinner during LLM calls
@@ -188,8 +200,9 @@ class TerminalRouter:
         with self._lock:
             if self._spinner is not None:
                 self._spinner.stop()
-            self._spinner = console.status(
-                f"[bold]{label} thinking...", spinner="dots"
+            style = _style_for(label)
+            self._spinner = self._console.status(
+                f"[{style}]{label} thinking...", spinner="dots"
             )
             self._spinner.start()
 
@@ -209,8 +222,14 @@ And in `_ui_loop`, before showing the input prompt:
     self.stop_spinner()
 
     style = _style_for(label)
-    console.print(f"\n[{style}]\\[{label}][/{style}] {question}")
-    answer = console.input("[bold]> [/]")
+    if md:
+        self._console.print(Group(
+            Text(f"[{label}]", style=style),
+            Markdown(question),
+        ))
+    else:
+        self._console.print(f"\n[{style}]\\[{label}][/{style}] {question}")
+    answer = self._console.input("[bold]> [/]")
 ```
 
 Caller usage (replaces `_llm_call_with_spinner`):
@@ -276,7 +295,7 @@ console.print(Panel(
 ```
 ╭──────────────────────────────────────────────────────────────╮
 │ Session complete.                                            │
-│ Transcript: PSOAS/temp/sessions/20260715154603/transcript.md │
+│ Transcript: temp/sessions/20260715154603/transcript.md │
 │                                                              │
 │ Variables stored:                                            │
 │   $var_1: Best Buy stencil                                   │
@@ -330,7 +349,7 @@ tool_pteca) import `console` from terminal_router for spinners.
 
 ```python
 # agent_loop.py
-from src.harness.terminal_router import register, console
+from src.harness.terminal_router import register, console, _router
 ```
 
 ### No logic changes
@@ -344,9 +363,9 @@ not required for MVP).
 ## File locations
 
 ```
-PSOAS/src/harness/terminal_router.py   (MODIFIED — Console integration)
-PSOAS/src/harness/agent_loop.py        (MODIFIED — spinner + banner + summary)
-PSOAS/src/tool_pteca.py                (MODIFIED — spinner)
+src/harness/terminal_router.py   (Console integration, styled output)
+src/harness/agent_loop.py        (spinner + banner + summary)
+src/tools/tool_pteca.py          (spinner)
 ```
 
 No new files.
@@ -407,7 +426,7 @@ No new files.
 
 ╭──────────────────────────────────────────────────────────────╮
 │ Session complete.                                            │
-│ Transcript: PSOAS/temp/sessions/20260715154603/transcript.md │
+│ Transcript: temp/sessions/20260715154603/transcript.md │
 │                                                              │
 │ Variables stored:                                            │
 │   $var_1: Best Buy stencil                                   │

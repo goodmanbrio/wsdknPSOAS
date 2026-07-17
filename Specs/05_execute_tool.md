@@ -35,7 +35,7 @@ execute_tool("run_pms1", {"firm": "Best Buy", "query": "..."})
     │  returns: "$var_1"
     │
     │  ── PHASE 5: persist to disk ──────────────────────────
-    │  path = session_dir / "assets" / "Best_Buy_stencil_var_1.json"
+    │  path = session_dir / "assets" / "var_1_Best_Buy_stencil.json"
     │  json.dump(result, path)
     │
     │  ── PHASE 6: compose result string ────────────────────
@@ -71,7 +71,7 @@ LLM response contains 2 ToolUseBlocks:
       "Best Buy stencil")              "Amcor stencil")
     → "$var_1"                        → "$var_2"
               │                                │
-    dump Best_Buy_stencil_var_1.json  dump Amcor_stencil_var_2.json
+    dump var_1_Best_Buy_stencil.json  dump var_2_Amcor_stencil.json
               │                                │
               ▼                                ▼
     "PMS1 complete. Best Buy          "PMS1 complete. Amcor
@@ -86,10 +86,10 @@ execute_tool.py
     ├── imports from: opaque_registry (03)    registry.store/resolve
     │                 terminal_router (01)     register() for channels
     │
-    ├── calls: tool entry functions
-    │            run_pms1_pipeline()   (06)
-    │            run_pteca()           (07)
-    │            stencil2chart()       (08)
+    ├── calls: tool entry functions (lazy imports inside handlers)
+    │            run_pms1_pipeline()   (06) — from src.tools.tool_pms1
+    │            run_pteca()           (07) — from src.tools.tool_pteca
+    │            stencil2chart()       (08) — from src.stencil2chart
     │
     ├── called by: agent_loop (02)    _safe_execute → execute_tool
     │
@@ -97,6 +97,8 @@ execute_tool.py
     │
     └── no deps on: system_prompt (04), anthropic SDK
 ```
+
+Note: `from src.XXX` imports resolve via `src/__init__.py`'s `__path__` extension — see D1/D8 in ClaudenoDiscretion.md.
 
 ## API
 
@@ -120,6 +122,19 @@ Set the session directory for disk persistence. Called once by
 execute_tool_mod.set_session_dir(session_dir)
 ```
 
+### reset_counters() → None
+
+Reset per-session state (`_s2c_counter`). Called by `run_harness()`
+between sessions so S2C labels restart at S2C-1.
+
+```python
+def reset_counters() -> None:
+    """Reset per-session state. Called by run_harness."""
+    global _s2c_counter
+    with _s2c_lock:
+        _s2c_counter = 0
+```
+
 ## Handle resolution (Phase 1)
 
 Before dispatching to any tool branch, scan all string values
@@ -131,19 +146,28 @@ strings to look up in the registry, not resolved data.
 
 ```python
 def _resolve_handles(params: dict) -> dict:
-    """Replace $var_N strings with actual data from registry."""
+    """Replace $var_N strings with actual data from registry.
+    Handles both top-level strings and lists of strings."""
     resolved = {}
     for key, value in params.items():
         if isinstance(value, str) and value.startswith("$var_"):
             resolved[key] = registry.resolve(value)
+        elif isinstance(value, list):
+            resolved[key] = [
+                registry.resolve(item)
+                if isinstance(item, str) and item.startswith("$var_")
+                else item
+                for item in value
+            ]
         else:
             resolved[key] = value
     return resolved
 ```
 
-Only scans top-level string values. No recursive scanning of
-nested dicts/lists — all handle params in current tool schemas
-are top-level strings.
+Scans top-level string values and arrays of strings (needed for
+PTECA v2 `stencils: [str]`). No recursive scanning of nested
+dicts. For array parameters (e.g. `stencils: [$var_1, $var_2]`),
+each element is resolved individually.
 
 If `registry.resolve()` raises `KeyError`, the exception
 propagates to `_safe_execute` in agent_loop, which catches it
@@ -162,10 +186,12 @@ function as the `channel` keyword argument.
 ```python
 # Per-branch label derivation:
 "run_pms1":          f"PMS1-{params['firm']}"
-"run_pteca":         f"PTECA-{params['firm']}"
+"run_pteca":         "PTECA-" + "+".join(firms)   # firms extracted from stencil dicts
 "run_stencil2chart": _next_s2c_label()    # "S2C-1", "S2C-2", etc.
 "ask_user":          "ORCHESTRATOR"
 "inspect_var":       (no channel needed — pure data, no terminal I/O)
+"write_session_md":  (no channel needed — file I/O only, no terminal output)
+"read_session_md":   (no channel needed — read-only, no terminal output)
 ```
 
 Tool entry functions accept an optional `channel` param:
@@ -193,11 +219,14 @@ _dispatch: dict[str, Callable] = {
     "run_stencil2chart": _exec_stencil2chart,
     "ask_user":          _exec_ask_user,
     "inspect_var":       _exec_inspect_var,
+    "write_session_md":  _exec_write_session_md,
+    "read_session_md":   _exec_read_session_md,
 }
 ```
 
-Unknown tool name → error string:
-`"Error: unknown tool 'foo'. Available: run_pms1, run_pteca, run_stencil2chart, ask_user, inspect_var"`
+Unknown tool name → error string with dynamically generated list:
+`available = ", ".join(_dispatch.keys())`
+`f"Error: unknown tool '{name}'. Available: {available}"`
 
 ## Per-branch details
 
@@ -216,7 +245,7 @@ def _exec_pms1(params: dict) -> str:
     handle = registry.store(stencil, f"{firm} stencil")
 
     # Persist to disk
-    _dump_asset(f"{_sanitize(firm)}_stencil_{handle.lstrip('$')}.json", stencil)
+    _dump_asset(f"{handle.lstrip('$')}_{_sanitize(firm)}_stencil.json", stencil)
 
     # Count rows + periods for result message
     n_rows = len(stencil.get("rows", []))
@@ -227,30 +256,43 @@ def _exec_pms1(params: dict) -> str:
     )
 ```
 
-### run_pteca
+### run_pteca (D14 rewrite)
 
 ```python
 def _exec_pteca(params: dict) -> str:
-    stencil = params["stencil"]       # already resolved from $var_N
+    stencils = params["stencils"]     # list of dicts (resolved from $var_N handles)
     query = params["query"]
-    firm = params["firm"]
-    channel = register(f"PTECA-{firm}")
+    firms = [s["firm"] for s in stencils]
+    channel = register("PTECA-" + "+".join(firms))
 
     # Call PTECA (internal agent loop)
-    chart_inputs = run_pteca(stencil, query, firm, channel=channel)
+    chart_inputs = run_pteca(stencils, query, channel=channel)
+
+    # Early return if user cancelled
+    if not chart_inputs:
+        return "PTECA cancelled by user. No charts to render. Move on."
 
     # Store each chart_input as a separate handle
     handles = []
+    last_handle = ""
     for i, ci in enumerate(chart_inputs):
         n_series = len(ci.get("series", []))
-        desc = f"{firm} chart {i+1} ({n_series} series)"
+        desc = f"chart {i+1} ({n_series} series)"
         handle = registry.store(ci, desc)
         handles.append(f"{handle}: {desc}")
+        last_handle = handle
 
     # Persist all to disk
-    _dump_asset(f"{_sanitize(firm)}_chart_inputs_{handle.lstrip('$')}.json", chart_inputs)
+    firms_slug = "_".join(_sanitize(f) for f in firms)
+    _dump_asset(
+        f"{firms_slug}_chart_inputs_{last_handle.lstrip('$')}.json",
+        chart_inputs,
+    )
 
-    return f"PTECA complete. {len(chart_inputs)} chart(s):\n" + "\n".join(handles)
+    return (
+        f"PTECA complete. {len(chart_inputs)} chart(s):\n"
+        + "\n".join(handles)
+    )
 ```
 
 ### run_stencil2chart
@@ -259,6 +301,9 @@ def _exec_pteca(params: dict) -> str:
 def _exec_stencil2chart(params: dict) -> str:
     chart_input = params["chart_input"]   # already resolved from $var_N
     channel = register(_next_s2c_label())
+
+    output_dir = _session_dir / "output"
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     # Call stencil2chart (returns Path or None)
     output_path = stencil2chart(chart_input, output_dir, channel=channel)
@@ -276,7 +321,7 @@ def _exec_stencil2chart(params: dict) -> str:
 ```python
 def _exec_ask_user(params: dict) -> str:
     question = params["question"]
-    answer = _orchestrator_channel.input(question)
+    answer = _orchestrator_channel.input(question, markdown=True)
     return f"User answered: {answer}"
 ```
 
@@ -299,10 +344,72 @@ def _exec_inspect_var(params: dict) -> str:
         elif mode == "full":
             return registry.dump(handle)
         else:
-            return f"Error: unknown mode '{mode}'. Use list, preview, or full."
+            return f"Error: unknown mode '{mode}'."
     except KeyError:
         available = registry.list_vars()
-        return f"Error: handle {handle} does not exist. Available:\n{available}"
+        return f"Error: {handle} does not exist. Available:\n{available}"
+```
+
+### write_session_md
+
+```python
+def _exec_write_session_md(params: dict) -> str:
+    if _session_dir is None:
+        return "Error: no active session."
+
+    filename = params["filename"]
+    content = params["content"]
+    mode = params.get("mode", "write")
+
+    # Path traversal safety
+    target = (_session_dir / filename).resolve()
+    if not target.is_relative_to(_session_dir.resolve()):
+        return f"Error: path '{filename}' escapes session directory."
+
+    # Resolve {{embed:$var_N}} markers
+    def _embed_replacer(match: re.Match) -> str:
+        handle = match.group(1)
+        try:
+            data = registry.resolve(handle)
+            desc = registry._registry[handle]["description"]
+            json_str = json.dumps(
+                data, indent=2, ensure_ascii=False, default=str
+            )
+            return f"**{handle}** ({desc}):\n```json\n{json_str}\n```"
+        except KeyError:
+            return f"[Error: {handle} not found]"
+
+    resolved_content = re.sub(
+        r"\{\{embed:(\$var_\d+)\}\}", _embed_replacer, content
+    )
+
+    # Write or append
+    target.parent.mkdir(parents=True, exist_ok=True)
+    open_mode = "a" if mode == "append" else "w"
+    with open(target, open_mode) as f:
+        f.write(resolved_content)
+
+    return f"Written: {_session_dir / filename} (mode={mode})"
+```
+
+### read_session_md
+
+```python
+def _exec_read_session_md(params: dict) -> str:
+    if _session_dir is None:
+        return "Error: no active session."
+
+    filename = params["filename"]
+
+    # Path traversal safety
+    target = (_session_dir / filename).resolve()
+    if not target.is_relative_to(_session_dir.resolve()):
+        return f"Error: path '{filename}' escapes session directory."
+
+    if not target.exists():
+        return f"Error: '{filename}' does not exist in session directory."
+
+    return target.read_text()
 ```
 
 ## Disk persistence (Phase 5)
@@ -312,10 +419,12 @@ large structured output persist to disk.
 
 | Tool | Persist? | Filename | Format |
 |---|---|---|---|
-| run_pms1 | Yes | `{Firm}_stencil_{var_N}.json` | JSON |
-| run_pteca | Yes | `{Firm}_chart_inputs_{var_N}.json` | JSON |
+| run_pms1 | Yes | `{var_N}_{Firm}_stencil.json` | JSON |
+| run_pteca | Yes | `{firms_slug}_chart_inputs_{var_N}.json` | JSON |
 | run_stencil2chart | No (already writes SVG) | — | — |
 | ask_user | No | — | — |
+| write_session_md | Yes (direct file write) | user-specified | Markdown |
+| read_session_md | No (read-only) | — | — |
 | inspect_var | No | — | — |
 
 Asset directory: `{session_dir}/assets/`
@@ -347,6 +456,7 @@ only read `_session_dir`, never write — no race condition.
 ```python
 import json
 import re
+import threading
 from pathlib import Path
 from typing import Any, Callable
 
@@ -375,12 +485,28 @@ def set_session_dir(path: Path):
     _session_dir = path
 
 
+def reset_counters() -> None:
+    """Reset per-session state. Called by run_harness."""
+    global _s2c_counter
+    with _s2c_lock:
+        _s2c_counter = 0
+
+
 # ── Handle resolution ──────────────────────────────────────
 def _resolve_handles(params: dict) -> dict:
+    """Replace $var_N strings with actual data from registry.
+    Handles both top-level strings and lists of strings."""
     resolved = {}
     for key, value in params.items():
         if isinstance(value, str) and value.startswith("$var_"):
             resolved[key] = registry.resolve(value)
+        elif isinstance(value, list):
+            resolved[key] = [
+                registry.resolve(item)
+                if isinstance(item, str) and item.startswith("$var_")
+                else item
+                for item in value
+            ]
         else:
             resolved[key] = value
     return resolved
@@ -401,6 +527,8 @@ def _sanitize(firm: str) -> str:
 
 # ── Branch handlers ────────────────────────────────────────
 def _exec_pms1(params: dict) -> str:
+    from src.tools.tool_pms1 import run_pms1_pipeline
+
     firm = params["firm"]
     query = params["query"]
     channel = register(f"PMS1-{firm}")
@@ -408,7 +536,9 @@ def _exec_pms1(params: dict) -> str:
     stencil = run_pms1_pipeline(firm, query, channel=channel)
 
     handle = registry.store(stencil, f"{firm} stencil")
-    _dump_asset(f"{_sanitize(firm)}_stencil_{handle.lstrip('$')}.json", stencil)
+    _dump_asset(
+        f"{handle.lstrip('$')}_{_sanitize(firm)}_stencil.json", stencil
+    )
 
     n_rows = len(stencil.get("rows", []))
     n_periods = len(stencil.get("periods", []))
@@ -419,26 +549,42 @@ def _exec_pms1(params: dict) -> str:
 
 
 def _exec_pteca(params: dict) -> str:
-    stencil = params["stencil"]
-    query = params["query"]
-    firm = params["firm"]
-    channel = register(f"PTECA-{firm}")
+    from src.tools.tool_pteca import run_pteca
 
-    chart_inputs = run_pteca(stencil, query, firm, channel=channel)
+    stencils = params["stencils"]
+    query = params["query"]
+    firms = [s["firm"] for s in stencils]
+    channel = register("PTECA-" + "+".join(firms))
+
+    chart_inputs = run_pteca(stencils, query, channel=channel)
+
+    if not chart_inputs:
+        return "PTECA cancelled by user. No charts to render. Move on."
 
     handles = []
+    last_handle = ""
     for i, ci in enumerate(chart_inputs):
         n_series = len(ci.get("series", []))
-        desc = f"{firm} chart {i+1} ({n_series} series)"
+        desc = f"chart {i+1} ({n_series} series)"
         handle = registry.store(ci, desc)
         handles.append(f"{handle}: {desc}")
+        last_handle = handle
 
-    _dump_asset(f"{_sanitize(firm)}_chart_inputs_{handle.lstrip('$')}.json", chart_inputs)
+    firms_slug = "_".join(_sanitize(f) for f in firms)
+    _dump_asset(
+        f"{firms_slug}_chart_inputs_{last_handle.lstrip('$')}.json",
+        chart_inputs,
+    )
 
-    return f"PTECA complete. {len(chart_inputs)} chart(s):\n" + "\n".join(handles)
+    return (
+        f"PTECA complete. {len(chart_inputs)} chart(s):\n"
+        + "\n".join(handles)
+    )
 
 
 def _exec_stencil2chart(params: dict) -> str:
+    from src.stencil2chart import stencil2chart
+
     chart_input = params["chart_input"]
     channel = register(_next_s2c_label())
 
@@ -454,8 +600,46 @@ def _exec_stencil2chart(params: dict) -> str:
 
 def _exec_ask_user(params: dict) -> str:
     question = params["question"]
-    answer = _orchestrator_channel.input(question)
+    answer = _orchestrator_channel.input(question, markdown=True)
     return f"User answered: {answer}"
+
+
+def _exec_write_session_md(params: dict) -> str:
+    if _session_dir is None:
+        return "Error: no active session."
+    filename = params["filename"]
+    content = params["content"]
+    mode = params.get("mode", "write")
+    target = (_session_dir / filename).resolve()
+    if not target.is_relative_to(_session_dir.resolve()):
+        return f"Error: path '{filename}' escapes session directory."
+    def _embed_replacer(match):
+        handle = match.group(1)
+        try:
+            data = registry.resolve(handle)
+            desc = registry._registry[handle]["description"]
+            json_str = json.dumps(data, indent=2, ensure_ascii=False, default=str)
+            return f"**{handle}** ({desc}):\n```json\n{json_str}\n```"
+        except KeyError:
+            return f"[Error: {handle} not found]"
+    resolved_content = re.sub(r"\{\{embed:(\$var_\d+)\}\}", _embed_replacer, content)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    open_mode = "a" if mode == "append" else "w"
+    with open(target, open_mode) as f:
+        f.write(resolved_content)
+    return f"Written: {_session_dir / filename} (mode={mode})"
+
+
+def _exec_read_session_md(params: dict) -> str:
+    if _session_dir is None:
+        return "Error: no active session."
+    filename = params["filename"]
+    target = (_session_dir / filename).resolve()
+    if not target.is_relative_to(_session_dir.resolve()):
+        return f"Error: path '{filename}' escapes session directory."
+    if not target.exists():
+        return f"Error: '{filename}' does not exist in session directory."
+    return target.read_text()
 
 
 def _exec_inspect_var(params: dict) -> str:
@@ -473,7 +657,10 @@ def _exec_inspect_var(params: dict) -> str:
         else:
             return f"Error: unknown mode '{mode}'."
     except KeyError:
-        return f"Error: {handle} does not exist. Available:\n{registry.list_vars()}"
+        return (
+            f"Error: {handle} does not exist. "
+            f"Available:\n{registry.list_vars()}"
+        )
 
 
 # ── Dispatch table ─────────────────────────────────────────
@@ -483,6 +670,8 @@ _dispatch: dict[str, Callable] = {
     "run_stencil2chart": _exec_stencil2chart,
     "ask_user":          _exec_ask_user,
     "inspect_var":       _exec_inspect_var,
+    "write_session_md":  _exec_write_session_md,
+    "read_session_md":   _exec_read_session_md,
 }
 
 
@@ -493,31 +682,42 @@ def execute_tool(name: str, params: dict) -> str:
         available = ", ".join(_dispatch.keys())
         return f"Error: unknown tool '{name}'. Available: {available}"
 
-    # Resolve handles before dispatching
-    # Skip for inspect_var — it needs raw handle strings, not resolved data
+    # Resolve handles before dispatching.
+    # Skip for inspect_var — it needs raw handle strings.
     if name == "inspect_var":
         return handler(params)
+
     resolved = _resolve_handles(params)
     return handler(resolved)
 ```
 
 ## Dependencies
 
-| Component | Spec | What it provides |
-|---|---|---|
-| opaque_registry | `03_opaque_registry.md` | `registry.store/resolve/list_vars/preview/dump` |
-| terminal_router | `01_terminal_router.md` | `register()` for per-invocation ToolChannels |
-| PMS1 pipeline | `06_tool_pms1.md` | `run_pms1_pipeline()` entry function |
-| PTECA | `07_tool_pteca.md` | `run_pteca()` entry function |
-| stencil2chart | `08_tool_stencil2chart.md` | `stencil2chart()` function |
+| Component | Spec | What it provides | Import style |
+|---|---|---|---|
+| opaque_registry | `03_opaque_registry.md` | `registry.store/resolve/list_vars/preview/dump` | Top-level |
+| terminal_router | `01_terminal_router.md` | `register()` for per-invocation ToolChannels | Top-level |
+| PMS1 pipeline | `06_tool_pms1.md` | `run_pms1_pipeline()` entry function | Lazy (inside `_exec_pms1`) |
+| PTECA | `07_tool_pteca.md` | `run_pteca()` entry function | Lazy (inside `_exec_pteca`) |
+| stencil2chart | `08_tool_stencil2chart.md` | `stencil2chart()` function | Lazy (inside `_exec_stencil2chart`) |
+
+Tool imports are lazy (inside handler functions) to avoid circular
+imports and defer heavy module loading until actually needed:
+- `from src.tools.tool_pms1 import run_pms1_pipeline`
+- `from src.tools.tool_pteca import run_pteca`
+- `from src.stencil2chart import stencil2chart`
 
 Does NOT import from: agent_loop (02), system_prompt (04),
 anthropic SDK. No circular deps.
 
+Note: PUMBA (spec 12) is currently PMS1-internal — orchestrator.py
+calls `run_pumba()` when PTO fails. Not yet exposed as a
+harness-level tool.
+
 ## File location
 
 ```
-PSOAS/src/harness/execute_tool.py
+src/harness/execute_tool.py
 ```
 
 ## Ideal demo
@@ -538,25 +738,26 @@ execute_tool("run_pms1", {"firm": "Best Buy", "query": "margins FY2022-2023"})
     │       ├── [PMS1-Best Buy] PTO judge... done.
     │       └── returns stencil dict
     │     handle = registry.store(stencil, "Best Buy stencil") → "$var_1"
-    │     dump assets/Best_Buy_stencil_var_1.json
+    │     dump assets/var_1_Best_Buy_stencil.json
     │
     └── returns "PMS1 complete. Best Buy stencil stored as $var_1. 5 rows, 2 periods."
 
-execute_tool("run_pteca", {"stencil": "$var_1", "query": "gross margins", "firm": "Best Buy"})
+execute_tool("run_pteca", {"stencils": ["$var_1"], "query": "gross margins"})
     │
-    ├── _resolve_handles: "$var_1" → actual stencil dict
+    ├── _resolve_handles: ["$var_1"] → [actual stencil dict]
     ├── _exec_pteca:
+    │     firms = [s["firm"] for s in stencils] → ["Best Buy"]
     │     channel = register("PTECA-Best Buy")
-    │     chart_input = run_pteca(stencil_dict, "gross margins", channel)
+    │     chart_inputs = run_pteca(stencils, "gross margins", channel=channel)
     │       │
     │       ├── [PTECA-Best Buy] Stencil has 5 rows.
     │       ├── [PTECA-Best Buy] Keep only margins?
     │       │   > yes
-    │       └── returns chart_input dict
-    │     handle = registry.store(chart_input, "Best Buy chart_input") → "$var_2"
+    │       └── returns [chart_input dict]
+    │     handle = registry.store(ci, "chart 1 (2 series)") → "$var_2"
     │     dump assets/Best_Buy_chart_inputs_var_2.json
     │
-    └── returns "PTECA complete. 1 chart(s):\n$var_2: Best Buy chart 1 (2 series)"
+    └── returns "PTECA complete. 1 chart(s):\n$var_2: chart 1 (2 series)"
 
 execute_tool("run_stencil2chart", {"chart_input": "$var_2"})
     │
@@ -574,9 +775,13 @@ execute_tool("run_stencil2chart", {"chart_input": "$var_2"})
 - **Session dir.** Module-level variable set once via
   `set_session_dir()`. No per-call arg. Thread-safe (read-only
   after set).
-- **Handle resolution.** Prefix scan on all top-level string
-  params. Runs before dispatch. Skipped for `inspect_var` (needs
-  raw handle strings).
+- **Handle resolution.** Prefix scan on top-level string params
+  and arrays of strings (for PTECA v2 `stencils`). Runs before
+  dispatch. Skipped for `inspect_var` (needs raw handle strings).
+  `write_session_md` passes through `_resolve_handles` (not skipped)
+  — its `content` field never starts with `$var_`, so resolution is
+  a no-op. The `{{embed:$var_N}}` markers inside content are resolved
+  separately by `_exec_write_session_md`'s internal regex.
 - **Dispatch mechanism.** Dict mapping name → handler function.
   Extensible — add one entry + one function for new tools.
 - **Label injection.** E1 approach: `execute_tool` creates a
@@ -585,13 +790,14 @@ execute_tool("run_stencil2chart", {"chart_input": "$var_2"})
   module-level default.
 - **Disk persistence.** Per-branch. PMS1 and PTECA dump to
   `{session_dir}/assets/`. stencil2chart already writes SVG.
-  Filenames derived from tool + `firm` param + registry handle
-  tag (e.g. `Best_Buy_stencil_var_1.json`). Handle tag prevents
-  collision when same firm is called twice.
+  Filenames derived from registry handle + tool + firm (e.g.
+  `var_1_Best_Buy_stencil.json`). Handle tag prevents collision
+  when same firm is called twice. PTECA uses joined firms slug
+  (e.g. `Best_Buy_Amcor_chart_inputs_var_3.json`).
 - **ask_user channel.** Module-level `_orchestrator_channel =
   register("ORCHESTRATOR")`. Reused across calls, not created per
   invocation.
 - **inspect_var.** Delegates to registry methods. No channel
   needed (pure data, no terminal I/O).
-- **Unknown tool.** Returns error string with list of available
-  tool names. No crash.
+- **Unknown tool.** Returns error string with dynamically
+  generated list from `_dispatch.keys()`. No crash.

@@ -74,20 +74,14 @@ NEW:
     Module-level _default_channel = register("S2C")
 ```
 
-## Entry function changes
+## Entry function signature
 
-Current signature:
-```python
-def stencil2chart(chart_input: dict, output_dir: Path) -> Path | None:
-```
-
-New signature:
 ```python
 def stencil2chart(chart_input: dict, output_dir: Path, channel: ToolChannel | None = None) -> Path | None:
 ```
 
-Only change is the optional `channel` param. All existing logic
-stays identical. The `_prompt_gaps` function receives `channel`
+Optional `channel` param routes all terminal output through
+TerminalRouter. The `_prompt_gaps` function receives `channel`
 to use instead of raw `print()`/`input()`.
 
 ```python
@@ -173,6 +167,8 @@ def _exec_stencil2chart(params: dict) -> str:
     output_dir = _session_dir / "output"
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # Note: stencil2chart() also calls output_dir.mkdir(parents=True,
+    # exist_ok=True) internally. Harmless double-call with exist_ok=True.
     output_path = stencil2chart(chart_input, output_dir, channel=channel)
 
     if output_path is None:
@@ -220,19 +216,52 @@ through `channel.input()` → TerminalRouter.
 | `lovelyplots` | Style sheets (`ipynb`, `colors10-markers`, `svg_no_fonttype`) |
 | `src/harness/terminal_router.py` | `register()`, `ToolChannel` |
 
+## Rendering details
+
+### matplotlib backend (D10)
+
+`matplotlib.use("Agg")` is set before any pyplot import. Required
+for thread safety -- worker threads cannot use the macOS NSWindow
+backend.
+
+### Direct-line labels
+
+Chart rendering uses direct text labels at the right edge of each
+line (`ax.text()`) instead of a matplotlib legend box. A
+`_nudge_labels()` helper prevents label overlap.
+
+### Font
+
+`plt.rcParams.update({"font.family": "Aptos"})` is hardcoded.
+
+### Tick formatting
+
+`ax.yaxis.set_major_formatter(ticker.ScalarFormatter(useOffset=False))`
+and `ax.ticklabel_format(style="plain", axis="y")` disable scientific
+notation on the y-axis.
+
+### Local _sanitize
+
+stencil2chart.py has its own `_sanitize()` function for filenames,
+separate from execute_tool's `_sanitize()`.
+
 ## File location
 
 ```
-Poony_Multiretrieval_S1/src/stencil2chart.py   (MODIFIED, already exists)
+src/scripts/stencil2chart.py   (PSOAS-modified copy, D8)
 ```
 
-No new file. The existing `stencil2chart.py` gains an optional
+The PSOAS-modified copy lives at `src/scripts/stencil2chart.py` and
+shadows the PMS1 original via `__path__` extension. Gains optional
 `channel` param and migrates print/input calls.
 
 ## Resolved questions
 
-- **Thin wrapper.** No new file needed. Existing function gains
-  optional `channel` param. execute_tool calls it directly.
+- **PSOAS-local copy.** `src/scripts/stencil2chart.py` is a
+  PSOAS-local copy with: `_nudge_labels()` helper, `_counter_lock`
+  threading lock, `matplotlib.use("Agg")` backend, rewritten
+  docstrings, and optional `channel` param. Not merely the original
+  file with one param added.
 - **No registry store.** Returns file path inline (small string).
 - **No disk dump.** stencil2chart already writes the SVG file.
 - **Label.** Per-invocation `"S2C-{N}"` via `_next_s2c_label()` in
