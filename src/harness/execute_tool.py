@@ -19,6 +19,7 @@ from typing import Any, Callable
 
 from src.harness.opaque_registry import registry
 from src.harness.terminal_router import register
+from src.config import Config
 
 
 # ── Session state (set once per run_harness call) ─────────────────────
@@ -39,6 +40,16 @@ def _next_s2c_label() -> str:
         return f"S2C-{_s2c_counter}"
 
 
+# ── Config state (set once per run_harness call) ─────────────────────
+_config: Config | None = None
+
+
+def set_config(config: Config) -> None:
+    """Store active config. Called by run_harness()."""
+    global _config
+    _config = config
+
+
 def set_session_dir(path: Path) -> None:
     global _session_dir
     _session_dir = path
@@ -46,9 +57,10 @@ def set_session_dir(path: Path) -> None:
 
 def reset_counters() -> None:
     """Reset per-session state. Called by run_harness."""
-    global _s2c_counter
+    global _s2c_counter, _config
     with _s2c_lock:
         _s2c_counter = 0
+    _config = None
 
 
 # ── Handle resolution ─────────────────────────────────────────────────
@@ -120,7 +132,7 @@ def _exec_pteca(params: dict) -> str:
     label = "PTECA-" + "+".join(firms)
     channel = register(label)
 
-    chart_inputs = run_pteca(stencils, query, channel=channel)
+    chart_inputs = run_pteca(stencils, query, channel=channel, config=_config)
 
     if not chart_inputs:
         return "PTECA cancelled by user. No charts to render. Move on."

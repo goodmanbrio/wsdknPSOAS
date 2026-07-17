@@ -14,10 +14,9 @@ Usage:
 
 from __future__ import annotations
 
-import anthropic
-
 from src.harness.terminal_router import register, ToolChannel, _router
 from src.config import Config
+from src.llm import get_pteca_llm, LLMResponse, ToolCall
 
 _default_channel = register("PTECA")
 
@@ -201,16 +200,13 @@ def run_pteca(
     stencils: list[dict],
     query: str,
     channel: ToolChannel | None = None,
+    config: Config | None = None,
 ) -> list[dict]:
     """Run PTECA agent loop. Returns list of chart_input dicts."""
     ch = channel or _default_channel
-    client = anthropic.Anthropic()
 
-    # Load model config
-    config = Config.from_env()
-    profile = config.get_llm_profile("anthropic_sonnetmed")
-    model = profile["model"]
-    max_tokens = profile["max_tokens"]
+    config = config or Config.from_env()
+    backend = get_pteca_llm(config)
 
     # Format input
     user_msg = _format_pteca_input(stencils, query)
@@ -227,21 +223,17 @@ def run_pteca(
     while turn_counter < MAX_TURNS:
         _router.start_spinner(ch.label)
         try:
-            response = client.messages.create(
-                model=model,
-                system=PTECA_SYSTEM_PROMPT,
+            response = backend.call_with_tools(
                 messages=messages,
+                system_prompt=PTECA_SYSTEM_PROMPT,
                 tools=PTECA_TOOLS,
-                max_tokens=max_tokens,
             )
         finally:
             _router.stop_spinner()
 
         # ── end_turn (error — must call finalize) ─────────────
         if response.stop_reason == "end_turn":
-            messages.append(
-                {"role": "assistant", "content": response.content}
-            )
+            messages.append(response.to_assistant_message())
             messages.append({
                 "role": "user",
                 "content": (
@@ -253,12 +245,8 @@ def run_pteca(
             continue
 
         # ── no tool calls ─────────────────────────────────────
-        tool_blocks = [b for b in response.content if b.type == "tool_use"]
-
-        if not tool_blocks:
-            messages.append(
-                {"role": "assistant", "content": response.content}
-            )
+        if not response.tool_calls:
+            messages.append(response.to_assistant_message())
             messages.append({
                 "role": "user",
                 "content": (
@@ -273,26 +261,26 @@ def run_pteca(
         tool_results = []
         finalize_result = None
 
-        for tb in tool_blocks:
-            if tb.name == "pteca_ask_user":
-                question = tb.input["question"]
+        for tc in response.tool_calls:
+            if tc.name == "pteca_ask_user":
+                question = tc.input["question"]
                 ch.print(question, markdown=True)
                 answer = ch.input("")
                 tool_results.append({
-                    "type": "tool_result",
-                    "tool_use_id": tb.id,
+                    "id": tc.id,
+                    "name": tc.name,
                     "content": f"User answered: {answer}",
                 })
 
-            elif tb.name == "finalize":
-                # Reject if pteca_ask_user was also called this turn
+            elif tc.name == "finalize":
                 asked_user = any(
-                    b.name == "pteca_ask_user" for b in tool_blocks
+                    t.name == "pteca_ask_user"
+                    for t in response.tool_calls
                 )
                 if asked_user:
                     tool_results.append({
-                        "type": "tool_result",
-                        "tool_use_id": tb.id,
+                        "id": tc.id,
+                        "name": tc.name,
                         "content": (
                             "Error: cannot finalize in the same turn as "
                             "pteca_ask_user. See the user's answer first, "
@@ -300,14 +288,13 @@ def run_pteca(
                         ),
                     })
                 else:
-                    charts_decisions = tb.input["charts"]
+                    charts_decisions = tc.input["charts"]
 
-                    # Empty charts list = user cancelled
                     if not charts_decisions:
                         finalize_result = []
                         tool_results.append({
-                            "type": "tool_result",
-                            "tool_use_id": tb.id,
+                            "id": tc.id,
+                            "name": tc.name,
                             "content": "Cancelled. No charts produced.",
                         })
                     else:
@@ -316,8 +303,8 @@ def run_pteca(
                         )
                         if not chart_inputs:
                             tool_results.append({
-                                "type": "tool_result",
-                                "tool_use_id": tb.id,
+                                "id": tc.id,
+                                "name": tc.name,
                                 "content": (
                                     "Error: no valid charts produced. "
                                     "All metric/firm names were invalid. "
@@ -327,8 +314,8 @@ def run_pteca(
                         else:
                             finalize_result = chart_inputs
                             tool_results.append({
-                                "type": "tool_result",
-                                "tool_use_id": tb.id,
+                                "id": tc.id,
+                                "name": tc.name,
                                 "content": (
                                     f"Finalized. {len(chart_inputs)} "
                                     "chart(s) built."
@@ -337,16 +324,18 @@ def run_pteca(
 
             else:
                 tool_results.append({
-                    "type": "tool_result",
-                    "tool_use_id": tb.id,
+                    "id": tc.id,
+                    "name": tc.name,
                     "content": (
-                        f"Error: unknown tool '{tb.name}'. "
+                        f"Error: unknown tool '{tc.name}'. "
                         "Available: pteca_ask_user, finalize."
                     ),
                 })
 
-        messages.append({"role": "assistant", "content": response.content})
-        messages.append({"role": "user", "content": tool_results})
+        messages.append(response.to_assistant_message())
+        messages.append(
+            LLMResponse.make_tool_results_message(tool_results)
+        )
 
         if finalize_result is not None:
             n = len(finalize_result)

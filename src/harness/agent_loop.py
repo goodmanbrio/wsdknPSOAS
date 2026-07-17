@@ -18,7 +18,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 
-import anthropic
 from rich.panel import Panel
 
 from src.harness.terminal_router import register, console, _router, harvest_logs
@@ -26,6 +25,7 @@ from src.harness.execute_tool import execute_tool, set_session_dir, reset_counte
 from src.harness.opaque_registry import registry
 from src.harness.system_prompt import SYSTEM_PROMPT, TOOL_DEFINITIONS
 from src.config import Config
+from src.llm import get_orchestrator_llm, LLMResponse, ToolCall
 
 orchestrator_out = register("ORCHESTRATOR")
 
@@ -38,24 +38,21 @@ MAX_TURNS_BEFORE_CHECKPOINT = 6
 def _dump_turn(
     path: Path,
     turn_num: int,
-    response,
-    tool_results: list | None,
+    response: LLMResponse,
+    tool_results: list[dict] | None,
     tool_logs: dict[str, list[str]] | None = None,
     stored_vars: list | None = None,
 ) -> None:
-    """Append one turn to the transcript file.
-
-    tool_logs: {channel_label: [msg, ...]} from harvest_logs()
-    stored_vars: [(handle, desc, data), ...] from registry.harvest_recent()
-    """
+    """Append one turn to the transcript file."""
     with open(path, "a") as f:
         f.write(f"\n## Turn {turn_num}\n\n")
-        for block in response.content:
-            if block.type == "text":
-                f.write(f"{block.text}\n\n")
-            elif block.type == "tool_use":
-                args_str = json.dumps(block.input, ensure_ascii=False)
-                f.write(f"**Tool call:** `{block.name}({args_str})`\n")
+
+        for block in response.raw_content:
+            if block["type"] == "text":
+                f.write(f"{block['text']}\n\n")
+            elif block["type"] == "tool_use":
+                args_str = json.dumps(block["input"], ensure_ascii=False)
+                f.write(f"**Tool call:** `{block['name']}({args_str})`\n")
 
         # Stream A: tool operational logs
         if tool_logs:
@@ -88,29 +85,32 @@ def _dump_turn(
 
 # ── Parallel tool dispatch ────────────────────────────────────────────
 
-def _safe_execute(tb) -> str:
+def _safe_execute(tc: ToolCall) -> str:
     """Execute one tool call, catch exceptions."""
     try:
-        return execute_tool(tb.name, tb.input)
+        return execute_tool(tc.name, tc.input)
     except Exception as exc:
-        return f"Error in {tb.name}: {type(exc).__name__}: {exc}"
+        return f"Error in {tc.name}: {type(exc).__name__}: {exc}"
 
 
-def _dispatch_parallel(tool_blocks: list) -> list[dict]:
-    """Execute tool calls in parallel. Returns tool_results in order."""
-    results = [None] * len(tool_blocks)
+def _dispatch_parallel(tool_calls: list[ToolCall]) -> list[dict]:
+    """Execute tool calls in parallel. Returns result dicts in order.
 
-    with ThreadPoolExecutor(max_workers=len(tool_blocks)) as pool:
+    Result format: [{"id": "tc_1", "name": "run_pms1", "content": "..."}]
+    """
+    results = [None] * len(tool_calls)
+
+    with ThreadPoolExecutor(max_workers=len(tool_calls)) as pool:
         future_to_idx = {
-            pool.submit(_safe_execute, tb): i
-            for i, tb in enumerate(tool_blocks)
+            pool.submit(_safe_execute, tc): i
+            for i, tc in enumerate(tool_calls)
         }
         for future in as_completed(future_to_idx):
             idx = future_to_idx[future]
-            tb = tool_blocks[idx]
+            tc = tool_calls[idx]
             results[idx] = {
-                "type": "tool_result",
-                "tool_use_id": tb.id,
+                "id": tc.id,
+                "name": tc.name,
                 "content": future.result(),
             }
 
@@ -119,15 +119,15 @@ def _dispatch_parallel(tool_blocks: list) -> list[dict]:
 
 # ── Main harness ──────────────────────────────────────────────────────
 
-def run_harness(first_query: str | None = None) -> None:
-    client = anthropic.Anthropic()
+def run_harness(
+    first_query: str | None = None,
+    config: Config | None = None,
+) -> None:
     registry.reset()
     reset_counters()
 
-    # Load orchestrator model from config
-    config = Config.from_env()
-    orch_profile = config.get_llm_profile("anthropic_orchestrator")
-    model = orch_profile["model"]
+    config = config or Config.from_env()
+    backend = get_orchestrator_llm(config)
 
     # Session dir + transcript
     ts = datetime.now().strftime("%Y%m%d%H%M%S")
@@ -137,6 +137,10 @@ def run_harness(first_query: str | None = None) -> None:
     transcript.write_text(f"# PSOAS Session {ts}\n")
 
     set_session_dir(session_dir)
+
+    # Propagate config to execute_tool dispatchers (PTECA reads it)
+    from src.harness.execute_tool import set_config
+    set_config(config)
 
     # ── Welcome banner (spec 10) ──────────────────────────────
     console.print(Panel(
@@ -187,41 +191,32 @@ def run_harness(first_query: str | None = None) -> None:
             # ── LLM call with spinner ─────────────────────────
             _router.start_spinner("ORCHESTRATOR")
             try:
-                response = client.messages.create(
-                    model=model,
-                    system=SYSTEM_PROMPT,
+                response = backend.call_with_tools(
                     messages=messages,
+                    system_prompt=SYSTEM_PROMPT,
                     tools=TOOL_DEFINITIONS,
-                    max_tokens=4096,
                 )
             finally:
                 _router.stop_spinner()
 
             # ── end_turn ──────────────────────────────────────
             if response.stop_reason == "end_turn":
-                for block in response.content:
-                    if hasattr(block, "text"):
-                        orchestrator_out.print(block.text, markdown=True)
-                messages.append(
-                    {"role": "assistant", "content": response.content}
-                )
+                if response.text:
+                    orchestrator_out.print(response.text, markdown=True)
+                messages.append(response.to_assistant_message())
                 transcript_turn += 1
                 _dump_turn(transcript, transcript_turn, response, None)
                 break  # → outer REPL re-prompts
 
             # ── tool_use ──────────────────────────────────────
-            tool_blocks = [
-                b for b in response.content if b.type == "tool_use"
-            ]
+            tool_calls = response.tool_calls
 
-            if not tool_blocks:
+            if not tool_calls:
                 if response.stop_reason == "max_tokens":
                     orchestrator_out.print(
                         "Response truncated (max_tokens). Retrying..."
                     )
-                    messages.append(
-                        {"role": "assistant", "content": response.content}
-                    )
+                    messages.append(response.to_assistant_message())
                     messages.append({
                         "role": "user",
                         "content": (
@@ -238,48 +233,49 @@ def run_harness(first_query: str | None = None) -> None:
                     continue
                 break
 
-            # Print LLM text blocks
-            for block in response.content:
-                if hasattr(block, "text") and block.text.strip():
-                    orchestrator_out.print(block.text, markdown=True)
+            # Print LLM text
+            if response.text.strip():
+                orchestrator_out.print(response.text, markdown=True)
 
             # Guard rail: max tool calls per turn
-            if len(tool_blocks) > MAX_TOOL_CALLS_PER_TURN:
-                tool_results = [
+            if len(tool_calls) > MAX_TOOL_CALLS_PER_TURN:
+                tool_results_msg = LLMResponse.make_tool_results_message([
                     {
-                        "type": "tool_result",
-                        "tool_use_id": tb.id,
+                        "id": tc.id,
+                        "name": tc.name,
                         "content": (
                             f"Error: max {MAX_TOOL_CALLS_PER_TURN} tool "
                             f"calls per turn exceeded "
-                            f"({len(tool_blocks)} requested)."
+                            f"({len(tool_calls)} requested)."
                         ),
                     }
-                    for tb in tool_blocks
-                ]
+                    for tc in tool_calls
+                ])
                 console.print(
                     f"[bold red]\\[ERROR][/bold red] "
                     f"Max {MAX_TOOL_CALLS_PER_TURN} tool calls per turn "
-                    f"exceeded ({len(tool_blocks)} requested)."
+                    f"exceeded ({len(tool_calls)} requested)."
                 )
             else:
-                tool_results = _dispatch_parallel(tool_blocks)
+                raw_results = _dispatch_parallel(tool_calls)
+                tool_results_msg = LLMResponse.make_tool_results_message(
+                    raw_results
+                )
 
             # Harvest streams A + B after dispatch completes
             tool_logs = harvest_logs()
             stored_vars = registry.harvest_recent()
 
             # Accumulate messages
-            messages.append(
-                {"role": "assistant", "content": response.content}
-            )
-            messages.append({"role": "user", "content": tool_results})
+            messages.append(response.to_assistant_message())
+            messages.append(tool_results_msg)
 
             # Transcript
             turn_counter += 1
             transcript_turn += 1
             _dump_turn(
-                transcript, transcript_turn, response, tool_results,
+                transcript, transcript_turn, response,
+                tool_results_msg["content"],
                 tool_logs=tool_logs, stored_vars=stored_vars,
             )
 
@@ -295,24 +291,17 @@ def run_harness(first_query: str | None = None) -> None:
 
                 _router.start_spinner("ORCHESTRATOR")
                 try:
-                    summary = client.messages.create(
-                        model=model,
-                        system=SYSTEM_PROMPT,
+                    summary = backend.call_with_tools(
                         messages=messages,
+                        system_prompt=SYSTEM_PROMPT,
                         tools=[],
                         max_tokens=1024,
                     )
                 finally:
                     _router.stop_spinner()
 
-                messages.append(
-                    {"role": "assistant", "content": summary.content}
-                )
-
-                text = ""
-                for block in summary.content:
-                    if hasattr(block, "text"):
-                        text += block.text
+                messages.append(summary.to_assistant_message())
+                text = summary.text
 
                 console.print(Panel(
                     text,

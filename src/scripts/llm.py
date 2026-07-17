@@ -16,8 +16,10 @@ API keys are resolved from env vars by provider — see PROVIDER_CONFIG.
 
 from __future__ import annotations
 
+import json
 import os
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
 
@@ -72,6 +74,42 @@ def _get_api_key(provider: str) -> str:
     return key
 
 
+# ── Normalized data types ───────────────────────────────────────────────
+
+@dataclass
+class ToolCall:
+    id: str         # Provider-assigned. Echoed back in tool_results.
+    name: str       # Tool function name, e.g. "run_pms1".
+    input: dict     # Parsed input arguments.
+
+
+@dataclass
+class LLMResponse:
+    stop_reason: str            # "end_turn", "tool_use", "max_tokens"
+    text: str                   # All text blocks concatenated with \n.
+    tool_calls: list[ToolCall]  # Empty if stop_reason != "tool_use".
+    raw_content: list[dict]     # Normalized content blocks for message accumulation.
+
+    def to_assistant_message(self) -> dict:
+        """Build normalized assistant message for appending to messages list."""
+        has_structured = self.tool_calls or any(
+            b["type"] in ("thinking", "redacted_thinking")
+            for b in self.raw_content
+        )
+        if has_structured:
+            return {"role": "assistant", "content": self.raw_content}
+        return {"role": "assistant", "content": self.text}
+
+    @staticmethod
+    def make_tool_results_message(results: list[dict]) -> dict:
+        """Build normalized tool_results message.
+
+        results: [{"id": "tc_1", "name": "run_pms1", "content": "..."}]
+        name is required for Gemini (uses name, not id).
+        """
+        return {"role": "tool_results", "content": results}
+
+
 # ── Abstract backend ────────────────────────────────────────────────────
 
 class LLMBackend(ABC):
@@ -96,6 +134,20 @@ class LLMBackend(ABC):
     @abstractmethod
     def model_name(self) -> str: ...
 
+    def call_with_tools(
+        self,
+        messages: list[dict],
+        system_prompt: str,
+        tools: list[dict],
+        max_tokens: int | None = None,
+    ) -> LLMResponse:
+        """Multi-turn tool calling. Override in backends that support tools."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support tool calling. "
+            f"Check that the profile assigned to this role uses a provider "
+            f"with tool support."
+        )
+
 
 # ── OpenAI-compatible backend ───────────────────────────────────────────
 # Works for: DeepSeek, OpenAI, Kimi/Moonshot, Groq, Together, local vLLM
@@ -103,10 +155,14 @@ class LLMBackend(ABC):
 class OpenAICompatibleLLM(LLMBackend):
     """Generic OpenAI-compatible chat completions backend."""
 
-    def __init__(self, model: str, api_key: str, base_url: str, temperature: float):
+    def __init__(
+        self, model: str, api_key: str, base_url: str, temperature: float,
+        max_tokens: int = 4096,
+    ):
         self._client = OpenAI(api_key=api_key, base_url=base_url)
         self._model = model
         self._temperature = temperature
+        self._max_tokens = max_tokens
 
     def complete(self, prompt: str, system_prompt: str | None = None) -> str:
         messages = self._build_messages(prompt, system_prompt)
@@ -142,6 +198,130 @@ class OpenAICompatibleLLM(LLMBackend):
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
         return messages
+
+    # ── Tool calling ─────────────────────────────────────────────────
+
+    def call_with_tools(self, messages, system_prompt, tools, max_tokens=None):
+        effective_max = max_tokens if max_tokens is not None else self._max_tokens
+        api_tools = self._tools_to_openai(tools)
+        api_messages = self._messages_to_openai(messages, system_prompt)
+
+        resp = self._client.chat.completions.create(
+            model=self._model,
+            messages=api_messages,
+            tools=api_tools if tools else None,
+            temperature=self._temperature,
+            max_tokens=effective_max,
+        )
+        return self._parse_openai_response(resp)
+
+    def _tools_to_openai(self, tools: list[dict]) -> list[dict]:
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": t["name"],
+                    "description": t["description"],
+                    "parameters": t["input_schema"],
+                },
+            }
+            for t in tools
+        ]
+
+    def _messages_to_openai(
+        self, messages: list[dict], system_prompt: str,
+    ) -> list[dict]:
+        result = [{"role": "system", "content": system_prompt}]
+        for msg in messages:
+            if msg["role"] == "tool_results":
+                for r in msg["content"]:
+                    result.append({
+                        "role": "tool",
+                        "tool_call_id": r["id"],
+                        "content": r["content"],
+                    })
+            elif msg["role"] == "assistant":
+                content = msg["content"]
+                if isinstance(content, str):
+                    result.append({"role": "assistant", "content": content})
+                elif isinstance(content, list):
+                    text_parts = []
+                    tool_calls = []
+                    for block in content:
+                        if block["type"] == "text":
+                            text_parts.append(block["text"])
+                        elif block["type"] == "tool_use":
+                            tool_calls.append({
+                                "id": block["id"],
+                                "type": "function",
+                                "function": {
+                                    "name": block["name"],
+                                    "arguments": json.dumps(
+                                        block["input"], ensure_ascii=False
+                                    ),
+                                },
+                            })
+                    oai_msg: dict = {
+                        "role": "assistant",
+                        "content": "\n".join(text_parts) or None,
+                    }
+                    if tool_calls:
+                        oai_msg["tool_calls"] = tool_calls
+                    result.append(oai_msg)
+                else:
+                    result.append(msg)
+            else:
+                result.append(msg)
+        return result
+
+    def _parse_openai_response(self, resp) -> LLMResponse:
+        if not resp.choices:
+            return LLMResponse(
+                stop_reason="end_turn", text="", tool_calls=[], raw_content=[],
+            )
+
+        choice = resp.choices[0]
+        message = choice.message
+
+        STOP_MAP = {
+            "stop": "end_turn",
+            "tool_calls": "tool_use",
+            "length": "max_tokens",
+        }
+        stop_reason = STOP_MAP.get(choice.finish_reason, choice.finish_reason)
+
+        text = message.content or ""
+        tool_calls = []
+        raw_content = []
+
+        if text:
+            raw_content.append({"type": "text", "text": text})
+
+        if message.tool_calls:
+            for tc in message.tool_calls:
+                try:
+                    input_dict = json.loads(tc.function.arguments)
+                except (json.JSONDecodeError, TypeError):
+                    input_dict = {}
+                tool_call = ToolCall(
+                    id=tc.id,
+                    name=tc.function.name,
+                    input=input_dict,
+                )
+                tool_calls.append(tool_call)
+                raw_content.append({
+                    "type": "tool_use",
+                    "id": tc.id,
+                    "name": tc.function.name,
+                    "input": input_dict,
+                })
+
+        return LLMResponse(
+            stop_reason=stop_reason,
+            text=text,
+            tool_calls=tool_calls,
+            raw_content=raw_content,
+        )
 
 
 # ── Anthropic backend ───────────────────────────────────────────────────
@@ -236,17 +416,108 @@ class AnthropicLLM(LLMBackend):
                 kwargs["system"] = system_prompt
             return kwargs
 
+    # ── Tool calling ─────────────────────────────────────────────────
+
+    def call_with_tools(self, messages, system_prompt, tools, max_tokens=None):
+        effective_max = max_tokens if max_tokens is not None else self._max_tokens
+        api_messages = self._messages_to_anthropic(messages)
+
+        kwargs = {
+            "model": self._model,
+            "system": system_prompt,
+            "messages": api_messages,
+            "tools": tools,
+            "max_tokens": effective_max,
+        }
+
+        if self._thinking and effective_max > self._thinking_budget:
+            if "opus-4-8" in self._model:
+                kwargs["thinking"] = {"type": "adaptive"}
+                kwargs["output_config"] = {"effort": "high"}
+            else:
+                kwargs["thinking"] = {
+                    "type": "enabled",
+                    "budget_tokens": self._thinking_budget,
+                }
+
+        resp = self._client.messages.create(**kwargs)
+        return self._parse_anthropic_response(resp)
+
+    def _messages_to_anthropic(self, messages: list[dict]) -> list[dict]:
+        result = []
+        for msg in messages:
+            if msg["role"] == "tool_results":
+                result.append({
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": r["id"],
+                            "content": r["content"],
+                        }
+                        for r in msg["content"]
+                    ],
+                })
+            else:
+                result.append(msg)
+        return result
+
+    def _parse_anthropic_response(self, resp) -> LLMResponse:
+        text_parts = []
+        tool_calls = []
+        raw_content = []
+
+        for block in resp.content:
+            if block.type == "text":
+                text_parts.append(block.text)
+                raw_content.append({"type": "text", "text": block.text})
+            elif block.type == "tool_use":
+                tool_calls.append(ToolCall(
+                    id=block.id,
+                    name=block.name,
+                    input=block.input,
+                ))
+                raw_content.append({
+                    "type": "tool_use",
+                    "id": block.id,
+                    "name": block.name,
+                    "input": block.input,
+                })
+            elif block.type == "thinking":
+                raw_content.append({
+                    "type": "thinking",
+                    "thinking": block.thinking,
+                    "signature": block.signature,
+                })
+            elif block.type == "redacted_thinking":
+                raw_content.append({
+                    "type": "redacted_thinking",
+                    "data": block.data,
+                })
+
+        return LLMResponse(
+            stop_reason=resp.stop_reason,
+            text="\n".join(text_parts),
+            tool_calls=tool_calls,
+            raw_content=raw_content,
+        )
+
 
 # ── Gemini backend ──────────────────────────────────────────────────────
 
 class GeminiLLM(LLMBackend):
     """Google Gemini backend via google-genai SDK."""
 
-    def __init__(self, model: str, api_key: str, temperature: float = 0.1):
+    def __init__(
+        self, model: str, api_key: str, temperature: float = 0.1,
+        max_tokens: int = 4096,
+    ):
         from google import genai
         self._client = genai.Client(api_key=api_key)
         self._model = model
         self._temperature = temperature
+        self._max_tokens = max_tokens
+        self._call_counter = 0
 
     def complete(self, prompt: str, system_prompt: str | None = None) -> str:
         from google.genai import types
@@ -278,6 +549,161 @@ class GeminiLLM(LLMBackend):
     def model_name(self) -> str:
         return self._model
 
+    # ── Tool calling ─────────────────────────────────────────────────
+
+    def call_with_tools(self, messages, system_prompt, tools, max_tokens=None):
+        from google.genai import types
+
+        effective_max = max_tokens if max_tokens is not None else self._max_tokens
+        contents = self._messages_to_gemini(messages)
+
+        config_kwargs = {
+            "temperature": self._temperature,
+            "system_instruction": system_prompt,
+            "max_output_tokens": effective_max,
+        }
+        if tools:
+            config_kwargs["tools"] = [self._tools_to_gemini(tools)]
+
+        config = types.GenerateContentConfig(**config_kwargs)
+        resp = self._client.models.generate_content(
+            model=self._model,
+            contents=contents,
+            config=config,
+        )
+        return self._parse_gemini_response(resp)
+
+    def _tools_to_gemini(self, tools: list[dict]):
+        from google.genai import types
+        declarations = []
+        for t in tools:
+            schema = dict(t["input_schema"])
+            declarations.append(types.FunctionDeclaration(
+                name=t["name"],
+                description=t["description"],
+                parameters=schema,
+            ))
+        return types.Tool(function_declarations=declarations)
+
+    def _messages_to_gemini(self, messages: list[dict]) -> list:
+        from google.genai import types
+        contents = []
+
+        for msg in messages:
+            role = msg["role"]
+
+            if role == "user":
+                parts = [types.Part(text=msg["content"])]
+                gemini_role = "user"
+
+            elif role == "assistant":
+                content = msg["content"]
+                parts = []
+                if isinstance(content, str):
+                    parts.append(types.Part(text=content))
+                elif isinstance(content, list):
+                    for block in content:
+                        if block["type"] == "text":
+                            parts.append(types.Part(text=block["text"]))
+                        elif block["type"] == "tool_use":
+                            parts.append(types.Part(
+                                function_call=types.FunctionCall(
+                                    name=block["name"],
+                                    args=block["input"],
+                                )
+                            ))
+                gemini_role = "model"
+
+            elif role == "tool_results":
+                parts = []
+                for r in msg["content"]:
+                    parts.append(types.Part(
+                        function_response=types.FunctionResponse(
+                            name=r["name"],
+                            response={"result": r["content"]},
+                        )
+                    ))
+                gemini_role = "user"
+
+            else:
+                continue
+
+            if not parts:
+                continue
+
+            # Merge with previous if same role (Gemini requires alternation)
+            if contents and contents[-1].role == gemini_role:
+                contents[-1].parts.extend(parts)
+            else:
+                contents.append(types.Content(role=gemini_role, parts=parts))
+
+        return contents
+
+    def _parse_gemini_response(self, resp) -> LLMResponse:
+        if not resp.candidates:
+            return LLMResponse(
+                stop_reason="end_turn", text="", tool_calls=[], raw_content=[],
+            )
+        candidate = resp.candidates[0]
+        if not candidate.content or not candidate.content.parts:
+            raw_reason = str(getattr(candidate, "finish_reason", "STOP"))
+            STOP_MAP = {
+                "STOP": "end_turn", "MAX_TOKENS": "max_tokens",
+                "FinishReason.STOP": "end_turn",
+                "FinishReason.MAX_TOKENS": "max_tokens",
+                "SAFETY": "end_turn", "RECITATION": "end_turn",
+                "FinishReason.SAFETY": "end_turn",
+                "FinishReason.RECITATION": "end_turn",
+            }
+            return LLMResponse(
+                stop_reason=STOP_MAP.get(raw_reason, "end_turn"),
+                text="", tool_calls=[], raw_content=[],
+            )
+        parts = candidate.content.parts
+
+        text_parts = []
+        tool_calls = []
+        raw_content = []
+
+        for part in parts:
+            if part.text:
+                text_parts.append(part.text)
+                raw_content.append({"type": "text", "text": part.text})
+            elif part.function_call:
+                fc = part.function_call
+                call_id = f"gemini_call_{self._call_counter}"
+                self._call_counter += 1
+                tool_calls.append(ToolCall(
+                    id=call_id,
+                    name=fc.name,
+                    input=dict(fc.args) if fc.args else {},
+                ))
+                raw_content.append({
+                    "type": "tool_use",
+                    "id": call_id,
+                    "name": fc.name,
+                    "input": dict(fc.args) if fc.args else {},
+                })
+
+        if tool_calls:
+            stop_reason = "tool_use"
+        else:
+            raw_reason = str(getattr(candidate, "finish_reason", "STOP"))
+            STOP_MAP = {
+                "STOP": "end_turn",
+                "MAX_TOKENS": "max_tokens",
+                "FinishReason.STOP": "end_turn",
+                "FinishReason.MAX_TOKENS": "max_tokens",
+            }
+            stop_reason = STOP_MAP.get(raw_reason, "end_turn")
+
+        return LLMResponse(
+            stop_reason=stop_reason,
+            text="\n".join(text_parts),
+            tool_calls=tool_calls,
+            raw_content=raw_content,
+        )
+
 
 # ── Factory: profile → backend instance ─────────────────────────────────
 
@@ -300,6 +726,7 @@ def _make_llm(profile: dict) -> LLMBackend:
             model=profile["model"],
             api_key=api_key,
             temperature=profile.get("temperature", 0.1),
+            max_tokens=profile.get("max_tokens", 4096),
         )
 
     # OpenAI-compatible (deepseek, openai, kimi, groq, together, etc.)
@@ -309,6 +736,7 @@ def _make_llm(profile: dict) -> LLMBackend:
         api_key=api_key,
         base_url=base_url,
         temperature=profile.get("temperature", 0.1),
+        max_tokens=profile.get("max_tokens", 4096),
     )
 
 
@@ -348,3 +776,13 @@ def get_pumba_gulei_llm(config: Config) -> LLMBackend:
 def get_pumba_leng_llm(config: Config) -> LLMBackend:
     """PUMBA Leng LLM — chunk screening (cheapest model)."""
     return _get(config, "pumba_leng_profile")
+
+
+def get_orchestrator_llm(config: Config) -> LLMBackend:
+    """Orchestrator agent loop LLM — tool calling required."""
+    return _get(config, "orchestrator_profile")
+
+
+def get_pteca_llm(config: Config) -> LLMBackend:
+    """PTECA chart planning agent LLM — tool calling required."""
+    return _get(config, "pteca_profile")

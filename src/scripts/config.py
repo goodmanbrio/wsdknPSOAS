@@ -55,6 +55,10 @@ class Config:
     sekei_profile: str = "anthropic_opushighthink"
     pto_hyde_profile: str = "deepseek_chattemp0"    # PTO HyDE: temp=0 for reproducibility
     pto_judge_profile: str = "anthropic_opusmedthink"  # PTO judge: Opus 4.8 + 5k thinking
+    # ── Harness LLM role → profile mapping ─────────────────────────────
+    orchestrator_profile: str = "anthropic_orchestrator"
+    pteca_profile: str = "anthropic_sonnetmed"
+
     # ── PUMBA (LLM-reasoned chunk retrieval fallback) ─────────────────
     pumba_dailo_profile: str = "anthropic_opusmedthink"
     pumba_gulei_profile: str = "anthropic_sonnetmed"

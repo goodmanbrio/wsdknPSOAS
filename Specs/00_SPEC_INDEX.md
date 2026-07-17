@@ -37,6 +37,12 @@ LLM-orchestrated tools with CLI user interaction at any depth.
 |---|---|---|---|
 | 12 | `12_PUMBA.md` | PUMBA fallback: Dailo/Gulei/Leng 3-tier LLM retrieval when PTO BM25 fails, orchestrator.py integration | DONE |
 
+### Layer 1d: LLM abstraction
+
+| # | Spec | What it covers | Status |
+|---|---|---|---|
+| 13 | `13_ModelAgnosticToolportEtCentralize.md` | Extend LLMBackend with call_with_tools(), normalize tool I/O across Anthropic/OpenAI/Gemini, centralize agent_loop + PTECA through llm.py factory | TODO |
+
 ### Layer 2: Tool contracts (one per tool)
 
 Every process that PSOAS can call needs a tool contract spec.
