@@ -23,8 +23,8 @@ Usage:
 
 from __future__ import annotations
 
+import re
 import threading
-from datetime import datetime
 from pathlib import Path
 
 import matplotlib
@@ -37,12 +37,18 @@ from src.harness.terminal_router import register, ToolChannel
 
 
 _STYLES = ["ipynb", "colors10-markers", "svg_no_fonttype"]
+_LABEL_FONTSIZE = "small"
 
 # Counter for filename uniqueness within a single process/second.
 _call_counter = 0
 _counter_lock = threading.Lock()
 
 _default_channel = register("S2C")
+
+
+def _sanitize(text: str) -> str:
+    """Collapse to filesystem-safe slug: non-word chars → _, runs collapsed, edges stripped."""
+    return re.sub(r"_+", "_", re.sub(r"[^\w\-]", "_", text)).strip("_")
 
 
 def _check_gaps(chart_input: dict) -> list[str]:
@@ -55,6 +61,31 @@ def _check_gaps(chart_input: dict) -> list[str]:
                 period = periods[i] if i < len(periods) else f"index {i}"
                 gaps.append(f"{s['metric']} @ {period}")
     return gaps
+
+
+def _nudge_labels(y_positions: list[float], min_gap: float) -> list[float]:
+    """Adjust y positions so no two direct-line labels overlap.
+
+    Greedy bottom-up: sorts by y, walks upward, pushes any label
+    that's too close to its neighbor. Works for 2-8 series.
+    """
+    if len(y_positions) <= 1:
+        return list(y_positions)
+
+    # (original_index, y_value) sorted by y ascending
+    indexed = sorted(enumerate(y_positions), key=lambda x: x[1])
+    adjusted = [0.0] * len(y_positions)
+
+    adjusted[indexed[0][0]] = indexed[0][1]
+    prev_y = indexed[0][1]
+
+    for orig_idx, y in indexed[1:]:
+        if y - prev_y < min_gap:
+            y = prev_y + min_gap
+        adjusted[orig_idx] = y
+        prev_y = y
+
+    return adjusted
 
 
 def _prompt_gaps(gaps: list[str], channel: ToolChannel) -> int:
@@ -109,29 +140,62 @@ def stencil2chart(
 
     # ── Plot ───────────────────────────────────────────────────
     with plt.style.context(_STYLES):
+        plt.rcParams.update({"font.family": "Aptos"})
         fig, ax = plt.subplots()
 
+        # Plot lines and collect endpoints for direct labels
+        endpoints = []  # (y_value, label_text, line_color)
         for s in chart_input["series"]:
-            ax.plot(periods, s["values"], label=s["metric"])
+            line, = ax.plot(periods, s["values"], label=s["metric"])
+            # Find last non-None value for label placement
+            last_y = None
+            for v in reversed(s["values"]):
+                if v is not None:
+                    last_y = v
+                    break
+            if last_y is not None:
+                endpoints.append(
+                    (last_y, s["metric"], line.get_color())
+                )
 
         ax.set_title(title)
         if denom_label:
             ax.set_ylabel(denom_label)
-        ax.legend()
+
+        # Direct line labels instead of legend box
+        if endpoints:
+            font_pts = matplotlib.font_manager.FontProperties(
+                size=_LABEL_FONTSIZE,
+            ).get_size_in_points()
+            y_lo, y_hi = ax.get_ylim()
+            ax_h_in = fig.get_figheight() * ax.get_position().height
+            data_per_pt = (y_hi - y_lo) / (ax_h_in * 72)
+            min_gap = font_pts * data_per_pt * 1.1
+            y_vals = [ep[0] for ep in endpoints]
+            nudged = _nudge_labels(y_vals, min_gap)
+
+            x_pos = len(periods) - 1
+            for i, (_, label, color) in enumerate(endpoints):
+                ax.text(
+                    x_pos + 0.15, nudged[i], f"  {label}",
+                    va="center", fontsize=_LABEL_FONTSIZE, color=color,
+                    clip_on=False,
+                )
 
         # Disable scientific notation — ipynb style enables it by
         # default which mangles percentage/count axes (shows "1e1").
-        ax.yaxis.set_major_formatter(ticker.ScalarFormatter(useOffset=False))
+        ax.yaxis.set_major_formatter(
+            ticker.ScalarFormatter(useOffset=False)
+        )
         ax.ticklabel_format(style="plain", axis="y")
 
         # ── Save ───────────────────────────────────────────────
         global _call_counter
         with _counter_lock:
             _call_counter += 1
-            ts = datetime.now().strftime("%Y%m%d%H%M%S")
-            filename = f"stencil2charted_{ts}_{_call_counter}.svg"
+            filename = f"chart_{_call_counter}_{_sanitize(title)}.svg"
         path = output_dir / filename
-        fig.savefig(path)
+        fig.savefig(path, bbox_inches="tight")
         plt.close(fig)
 
     return path

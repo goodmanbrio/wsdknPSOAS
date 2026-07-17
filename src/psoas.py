@@ -3,7 +3,8 @@
 psoas.py — PSOAS entry point.
 
 Usage:
-    python psoas.py "Chart Best Buy and Amcor gross margins FY2022-2023"
+    python psoas.py                              # interactive REPL
+    python psoas.py "Chart Best Buy margins"     # first query pre-loaded
 """
 
 import sys
@@ -18,12 +19,8 @@ from src.harness.agent_loop import run_harness  # noqa: E402
 
 
 def main():
-    if len(sys.argv) < 2:
-        print("Usage: python psoas.py \"<query>\"")
-        sys.exit(1)
-
-    query = " ".join(sys.argv[1:])
-    run_harness(query)
+    query = " ".join(sys.argv[1:]) if len(sys.argv) > 1 else None
+    run_harness(first_query=query)
 
 
 if __name__ == "__main__":

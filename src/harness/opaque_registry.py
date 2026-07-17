@@ -20,6 +20,7 @@ class OpaqueRegistry:
     def __init__(self):
         self._counter: int = 0
         self._registry: dict[str, dict] = {}
+        self._recent: list[tuple[str, str, Any]] = []
         self._lock = threading.RLock()
 
     def store(self, data: Any, description: str) -> str:
@@ -30,6 +31,7 @@ class OpaqueRegistry:
                 "data": data,
                 "description": description,
             }
+            self._recent.append((handle, description, data))
         return handle
 
     def resolve(self, handle: str) -> Any:
@@ -60,10 +62,22 @@ class OpaqueRegistry:
     def dump(self, handle: str) -> str:
         return str(self.resolve(handle))
 
+    def harvest_recent(self) -> list[tuple[str, str, Any]]:
+        """Drain and return variables stored since last harvest.
+
+        Returns [(handle, description, data), ...]. Called from
+        agent_loop after tool dispatch to enrich the transcript.
+        """
+        with self._lock:
+            batch = list(self._recent)
+            self._recent.clear()
+            return batch
+
     def reset(self):
         with self._lock:
             self._counter = 0
             self._registry.clear()
+            self._recent.clear()
 
 
 # ── Singleton ─────────────────────────────────────────────────────────

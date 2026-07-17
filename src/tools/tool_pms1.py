@@ -16,7 +16,7 @@ import threading
 
 from llama_index.core import VectorStoreIndex
 
-from src.harness.terminal_router import register, ToolChannel
+from src.harness.terminal_router import register, ToolChannel, override_channel, clear_override
 from src.config import Config
 from src.sekei import sekei
 from src.orchestrator import run
@@ -33,28 +33,34 @@ def run_pms1_pipeline(
     """Run full PMS1 pipeline for one firm. Returns stencil dict."""
     ch = channel or _default_channel
 
-    # ── Load deps ─────────────────────────────────────────────
-    ch.print("Loading index...")
-    config = Config.from_env()
-    index = _load_index(config)
+    # Redirect bare "PMS1" prints from internal modules (pto.py,
+    # orchestrator.py, stencil.py) to the firm-specific channel.
+    override_channel("PMS1", ch)
+    try:
+        # ── Load deps ─────────────────────────────────────────
+        ch.print("Loading index...")
+        config = Config.from_env()
+        index = _load_index(config)
 
-    # ── Sekei ─────────────────────────────────────────────────
-    ch.print("Sekei planning...")
-    full_query = f"{firm}: {query}"
-    plan = sekei(full_query, config)
-    n_cells = len(plan.cells)
-    n_batches = len(plan.batches)
-    ch.print(f"done. {n_cells} cells, {n_batches} batches.")
+        # ── Sekei ─────────────────────────────────────────────
+        ch.print("Sekei planning...")
+        full_query = f"{firm}: {query}"
+        plan = sekei(full_query, config)
+        n_cells = len(plan.cells)
+        n_batches = len(plan.batches)
+        ch.print(f"done. {n_cells} cells, {n_batches} batches.")
 
-    # ── PTO + Stencil ─────────────────────────────────────────
-    ch.print(f"Running {n_batches} batches...")
-    results = run(plan, index, config)
+        # ── PTO + Stencil ─────────────────────────────────────
+        ch.print(f"Running {n_batches} batches...")
+        results = run(plan, index, config)
 
-    n_filled = len(results)
-    ch.print(f"Stencil computed. {n_filled} cells filled.")
+        n_filled = len(results)
+        ch.print(f"Stencil computed. {n_filled} cells filled.")
 
-    # ── Serialize ─────────────────────────────────────────────
-    return serialize_stencil(plan, results)
+        # ── Serialize ─────────────────────────────────────────
+        return serialize_stencil(plan, results)
+    finally:
+        clear_override("PMS1")
 
 
 # ── Index cache (double-check locking) ────────────────────────────────

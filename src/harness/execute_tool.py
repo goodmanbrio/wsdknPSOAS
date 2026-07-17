@@ -54,11 +54,19 @@ def reset_counters() -> None:
 # ── Handle resolution ─────────────────────────────────────────────────
 
 def _resolve_handles(params: dict) -> dict:
-    """Replace $var_N strings with actual data from registry."""
+    """Replace $var_N strings with actual data from registry.
+    Handles both top-level strings and lists of strings."""
     resolved = {}
     for key, value in params.items():
         if isinstance(value, str) and value.startswith("$var_"):
             resolved[key] = registry.resolve(value)
+        elif isinstance(value, list):
+            resolved[key] = [
+                registry.resolve(item)
+                if isinstance(item, str) and item.startswith("$var_")
+                else item
+                for item in value
+            ]
         else:
             resolved[key] = value
     return resolved
@@ -92,7 +100,7 @@ def _exec_pms1(params: dict) -> str:
 
     handle = registry.store(stencil, f"{firm} stencil")
     _dump_asset(
-        f"{_sanitize(firm)}_stencil_{handle.lstrip('$')}.json", stencil
+        f"{handle.lstrip('$')}_{_sanitize(firm)}_stencil.json", stencil
     )
 
     n_rows = len(stencil.get("rows", []))
@@ -106,24 +114,29 @@ def _exec_pms1(params: dict) -> str:
 def _exec_pteca(params: dict) -> str:
     from src.tools.tool_pteca import run_pteca
 
-    stencil = params["stencil"]
+    stencils = params["stencils"]
     query = params["query"]
-    firm = params["firm"]
-    channel = register(f"PTECA-{firm}")
+    firms = [s["firm"] for s in stencils]
+    label = "PTECA-" + "+".join(firms)
+    channel = register(label)
 
-    chart_inputs = run_pteca(stencil, query, firm, channel=channel)
+    chart_inputs = run_pteca(stencils, query, channel=channel)
+
+    if not chart_inputs:
+        return "PTECA cancelled by user. No charts to render. Move on."
 
     handles = []
     last_handle = ""
     for i, ci in enumerate(chart_inputs):
         n_series = len(ci.get("series", []))
-        desc = f"{firm} chart {i + 1} ({n_series} series)"
+        desc = f"chart {i + 1} ({n_series} series)"
         handle = registry.store(ci, desc)
         handles.append(f"{handle}: {desc}")
         last_handle = handle
 
+    firms_slug = "_".join(_sanitize(f) for f in firms)
     _dump_asset(
-        f"{_sanitize(firm)}_chart_inputs_{last_handle.lstrip('$')}.json",
+        f"{firms_slug}_chart_inputs_{last_handle.lstrip('$')}.json",
         chart_inputs,
     )
 
@@ -151,8 +164,64 @@ def _exec_stencil2chart(params: dict) -> str:
 
 def _exec_ask_user(params: dict) -> str:
     question = params["question"]
-    answer = _orchestrator_channel.input(question)
+    answer = _orchestrator_channel.input(question, markdown=True)
     return f"User answered: {answer}"
+
+
+def _exec_write_session_md(params: dict) -> str:
+    if _session_dir is None:
+        return "Error: no active session."
+
+    filename = params["filename"]
+    content = params["content"]
+    mode = params.get("mode", "write")
+
+    # Path traversal safety
+    target = (_session_dir / filename).resolve()
+    if not target.is_relative_to(_session_dir.resolve()):
+        return f"Error: path '{filename}' escapes session directory."
+
+    # Resolve {{embed:$var_N}} markers
+    def _embed_replacer(match: re.Match) -> str:
+        handle = match.group(1)
+        try:
+            data = registry.resolve(handle)
+            desc = registry._registry[handle]["description"]
+            json_str = json.dumps(
+                data, indent=2, ensure_ascii=False, default=str
+            )
+            return f"**{handle}** ({desc}):\n```json\n{json_str}\n```"
+        except KeyError:
+            return f"[Error: {handle} not found]"
+
+    resolved_content = re.sub(
+        r"\{\{embed:(\$var_\d+)\}\}", _embed_replacer, content
+    )
+
+    # Write or append
+    target.parent.mkdir(parents=True, exist_ok=True)
+    open_mode = "a" if mode == "append" else "w"
+    with open(target, open_mode) as f:
+        f.write(resolved_content)
+
+    return f"Written: {_session_dir / filename} (mode={mode})"
+
+
+def _exec_read_session_md(params: dict) -> str:
+    if _session_dir is None:
+        return "Error: no active session."
+
+    filename = params["filename"]
+
+    # Path traversal safety
+    target = (_session_dir / filename).resolve()
+    if not target.is_relative_to(_session_dir.resolve()):
+        return f"Error: path '{filename}' escapes session directory."
+
+    if not target.exists():
+        return f"Error: '{filename}' does not exist in session directory."
+
+    return target.read_text()
 
 
 def _exec_inspect_var(params: dict) -> str:
@@ -184,6 +253,8 @@ _dispatch: dict[str, Callable] = {
     "run_stencil2chart": _exec_stencil2chart,
     "ask_user":          _exec_ask_user,
     "inspect_var":       _exec_inspect_var,
+    "write_session_md":  _exec_write_session_md,
+    "read_session_md":   _exec_read_session_md,
 }
 
 

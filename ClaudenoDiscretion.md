@@ -166,3 +166,157 @@
 - We never display interactive plots — only save SVGs to disk
 
 **Decision:** `matplotlib.use("Agg")` before any pyplot import in `stencil2chart.py`. Agg = Anti-Grain Geometry, headless raster renderer. Writes files without touching AppKit. Thread-safe. No GUI needed for SVG output.
+
+---
+
+## D11: EOF detection through terminal_router — spec vs implementation gap
+
+**Forensics:**
+- Spec 11 pseudo-code shows `except EOFError` around `orchestrator_out.input("")`
+- `ToolChannel.input()` → `_router.input()` → puts request in `_input_queue`, blocks on `AnswerSlot.wait()`
+- EOF (Ctrl+D) is caught inside `_ui_loop` (terminal_router.py:158-175), which sets `_is_dead = True`, returns `""` to the slot, then exits the UI thread
+- `ToolChannel.input()` never raises `EOFError` — it returns `""`
+- If `_is_dead` is True, subsequent `_router.input()` calls return `""` immediately (terminal_router.py:103-104)
+- Without detection: EOF → returns "" → empty-input hint → loop calls input() → returns "" instantly → hint → infinite loop
+
+**Hypothesis 1:** Modify `ToolChannel.input()` to raise EOFError when `_is_dead`.
+- **Doubt:** Changes terminal_router.py (spec 11 says "no new files", only agent_loop + psoas modified). Also breaks tool threads that call `.input()` during parallel dispatch — they'd need try/except too.
+- **Failure mode:** Every tool's `.input()` call would need exception handling. Spec 09 (ask_user) doesn't anticipate this.
+
+**Hypothesis 2:** Return a sentinel string (e.g. `"__EOF__"`) from `input()` when dead.
+- **Doubt:** Fragile. User could theoretically type `"__EOF__"`. Coupling by magic string.
+
+**Hypothesis 3:** Check `_router._is_dead` after getting empty string from `input()`.
+- **Verify:** `_router` is already imported in agent_loop.py (`from src.harness.terminal_router import register, console, _router`). `_is_dead` is a simple bool attribute.
+- **Doubt:** Accessing private `_is_dead` from another module. But `_router` itself is already accessed this way (D6 precedent).
+- **Failure mode:** Race condition? No — EOF is a terminal state. Once `_is_dead = True`, it never reverts. And the REPL prompt only runs when no tools are executing (outer loop, not inner loop), so no concurrent mutation.
+
+**Decision:** Hypothesis 3. After `orchestrator_out.input("")` returns, check `if not user_input.strip() and _router._is_dead: break`. Distinguishes EOF (break outer loop) from empty input (print hint, continue). Consistent with D6 precedent of accessing `_router` internals.
+
+---
+
+## D12: Transcript enrichment — choke point capture for tool logs + stored vars
+
+**Forensics:**
+- Transcript only captured stream C (tool result strings sent to LLM). Two streams missing:
+  - Stream A: tool operational logs (`channel.print()` calls in PMS1, PTECA, S2C)
+  - Stream B: stored variable data (`registry.store()` calls — stencils, chart_inputs)
+- All tool output funnels through two choke points: `ToolChannel.print()` and `registry.store()`. No per-tool changes needed.
+
+**Hypothesis:** Add capture buffers at each choke point. Harvest after tool dispatch. Pass to `_dump_turn`.
+
+**Stream A — ToolChannel._log:**
+- Added `_log: list[str]` to `ToolChannel.__init__`. `print()` appends msg.
+- `harvest_logs()` iterates all registered channels, returns `{label: [msgs]}`, clears all logs.
+- **Doubt — ORCHESTRATOR channel:** `orchestrator_out.print()` also goes through `ToolChannel.print()`. Would duplicate LLM text (already in transcript as response content).
+  - **Resolution:** `harvest_logs()` skips `ORCHESTRATOR` label in return dict, but still clears its `_log` to prevent unbounded growth.
+- **Doubt — Thread safety:** Each tool call gets a unique channel (PMS1-BestBuy, PTECA-Amcor, S2C-1). No concurrent writes to same `_log`. Harvest runs from main thread after `ThreadPoolExecutor` context manager exits (all threads done). No lock needed.
+- **Doubt — Channel reuse across follow-ups:** `register()` is idempotent. Second `run_pms1("Best Buy")` gets same channel. But `harvest_logs()` clears `_log` after each turn, so no stale data bleeds across turns.
+
+**Stream B — registry._recent:**
+- Added `_recent: list[tuple[str, str, Any]]` to `OpaqueRegistry`. `store()` appends `(handle, desc, data)` inside existing `_lock`.
+- `harvest_recent()` drains list under lock, returns batch. Called from main thread after dispatch.
+- **Doubt — Thread safety:** `store()` already holds `self._lock` (RLock). `_recent.append()` added inside that critical section. Parallel tool threads contend on the lock but don't corrupt state.
+- **Doubt — Data reference vs copy:** `_recent` stores same reference as `_registry`. Not copied. Transcript dump (`json.dumps`) happens immediately after harvest, before any mutation opportunity. Safe.
+
+**Wiring — harvest at call site, not inside dispatch:**
+- `_dispatch_parallel` stays unchanged (returns only `tool_results`).
+- `harvest_logs()` and `registry.harvest_recent()` called in agent_loop after dispatch returns, before `_dump_turn`.
+- **Why not inside `_dispatch_parallel`:** Separation of concerns. Dispatch just dispatches. Transcript concerns stay in agent_loop.
+- **Timing verified:** `ThreadPoolExecutor.__exit__` waits for all futures → all `channel.print()` and `registry.store()` calls completed → harvest captures exactly this turn's data.
+
+**_dump_turn changes:**
+- New optional params: `tool_logs: dict | None = None`, `stored_vars: list | None = None`.
+- Existing call sites (end_turn, max_tokens) pass neither → defaults to None → guard clauses skip.
+- Tool_use call site passes both → transcript gets full audit trail.
+
+**Decision:** Implemented as described. Three files changed: `terminal_router.py` (ToolChannel._log + harvest_logs), `opaque_registry.py` (_recent + harvest_recent), `agent_loop.py` (_dump_turn + call site wiring). Zero changes to tool code (tool_pms1.py, tool_pteca.py, stencil2chart.py).
+
+---
+
+## D13: PMS1 internal modules hardcode bare "PMS1" channel — logs not grouped by firm
+
+**Forensics:**
+- `orchestrator.py:36`, `pto.py:35`, `stencil.py:20` all do `_pto_out = register("PMS1")` at module import time
+- `tool_pms1.py` creates firm-specific channel `register(f"PMS1-{firm}")` and passes to `run_pms1_pipeline`
+- Internal modules ignore the passed channel, print to bare "PMS1" channel
+- Transcript shows bare "PMS1" section with pto_judge logs + warnings, separate from "PMS1-Best Buy" section
+- PTECA does NOT have this problem — self-contained, uses `ch` directly
+
+**Hypothesis 1:** Thread channel through function signatures (orchestrator.run, pto internals, serialize_stencil).
+- **Doubt:** Violates "no changes to internal logic" from D8. Invasive — many function signatures change across 3 files deep in the PMS1 pipeline.
+
+**Hypothesis 2:** Thread-local channel override.
+- **Verify:** Each tool call runs in its own worker thread via `_dispatch_parallel` → `ThreadPoolExecutor`. Thread-local state is isolated per thread.
+- `override_channel("PMS1", ch)` in `run_pms1_pipeline` before calling pipeline. Internal modules call `_pto_out.print(msg)` → `ToolChannel.print()` checks `_get_override(self)` → finds override for label "PMS1" → redirects to "PMS1-Best Buy" channel.
+- `clear_override("PMS1")` in `finally` block.
+- **Doubt — Recursion:** Could "PMS1-Best Buy" channel itself be overridden? No. Override matches exact label "PMS1". "PMS1-Best Buy" label doesn't match.
+- **Doubt — Thread safety:** `threading.local()` guarantees per-thread isolation. Two parallel PMS1 calls (Best Buy + Amcor) each set their own thread-local override. No cross-contamination.
+- **Doubt — _log target:** When overridden, `msg` appends to the TARGET channel's `_log` (e.g. "PMS1-Best Buy"), not the source channel's. `harvest_logs()` then groups these logs correctly under "PMS1-Best Buy". Bare "PMS1" channel's `_log` stays empty.
+
+**Decision:** Hypothesis 2. Added `_thread_overrides = threading.local()`, `override_channel()`, `clear_override()`, `_get_override()` to terminal_router.py. Modified `ToolChannel.print()` and `ToolChannel.input()` to check overrides. Wrapped `run_pms1_pipeline` body in `override_channel/clear_override`. Zero changes to PMS1 internal modules (orchestrator.py, pto.py, stencil.py).
+
+---
+
+## D14: PTECA v2 — multi-stencil, always-ask, comparison charts
+
+**Forensics:**
+- PTECA v1 accepted one stencil per call. Orchestrator called it once per firm → no comparison charts possible.
+- PTECA v1 auto-finalized when query was clear ("If the user's intent is clear, skip pteca_ask_user"). User wanted interactive chart planning always.
+- User wants ASCII chart previews in options, custom layout input, iterative confirm cycle.
+
+**Changes — contract:**
+- `run_pteca(stencil, query, firm)` → `run_pteca(stencils, query)`. `firm` dropped — embedded in each stencil's `"firm"` field.
+- `finalize` schema: `metrics: [str]` → `metrics: [{firm: str, metric: str}]`. Added explicit `periods: [str]` per chart for period control.
+- Orchestrator calls PTECA ONCE with ALL stencil handles, not once per firm.
+
+**Changes — behavior (system prompt):**
+- ALWAYS asks user via `pteca_ask_user` before finalizing. Even single-firm.
+- Presents 2-3 layout options with ASCII chart sketches (generated by LLM, not code).
+- Accepts free-form custom requests. Redraws preview, confirms before finalize.
+- Detects period mismatches, offers intersect/pad-0/gap options.
+- MAX_TURNS bumped 4 → 8 for extra round-trips.
+
+**Changes — _resolve_handles (execute_tool.py):**
+- Added `elif isinstance(value, list)` branch to resolve `$var_N` items within arrays.
+- **Doubt:** Could break other tools? No — no other tool sends lists. Safe.
+
+**Changes — _exec_pteca (execute_tool.py):**
+- Extracts firms from stencil dicts: `[s["firm"] for s in stencils]`.
+- Channel label: `"PTECA-" + "+".join(firms)` (e.g. "PTECA-Best Buy+Boeing").
+- **Doubt:** `s["firm"]` exists? Verified — `serialize_stencil` always includes `firm` field.
+
+**Changes — _build_chart_inputs (tool_pteca.py):**
+- Multi-stencil lookup: `{firm: {metric: row}}` index.
+- Period alignment: for each chart's explicit periods, looks up values per firm. Missing periods padded with 0 (user-approved dummy value for plotting).
+- Legend names: multi-firm → "Firm - Metric". Single-firm → bare metric name.
+- **Doubt — stencil2chart with 0 padding:** 0 is a valid numeric value, matplotlib plots it normally. Not a gap, but a deliberate dummy. Acceptable per user's instruction.
+
+**Changes — orchestrator (system_prompt.py):**
+- `run_pteca` schema: `stencil: str` → `stencils: [str]`, dropped `firm`.
+- Workflow step 3: "run_pteca ONCE with ALL stencils". Explicit instruction not to pre-decide chart layout.
+- Example updated to show multi-firm call.
+
+**Files changed:** `tool_pteca.py` (rewrite), `execute_tool.py` (_resolve_handles + _exec_pteca), `system_prompt.py` (schema + prompt).
+
+---
+
+## D15: Session-scoped file I/O tools — write_session_md + read_session_md
+
+**Forensics:**
+- Orchestrator had no file I/O capability. Couldn't write reports, embed chart SVG refs in MDs, or dump variable data into documents.
+- User wants session-scoped markdown only — not arbitrary filesystem access.
+
+**Design — write_session_md:**
+- Params: `filename` (relative to session_dir), `content` (markdown string), `mode` ("write"|"append").
+- `{{embed:$var_N}}` markers in content are resolved via `re.sub` → `registry.resolve()` → JSON code block in-place. Orchestrator controls exact placement without seeing the full JSON (no context bloat).
+- **Doubt — `_resolve_handles` collision:** Could `_resolve_handles` accidentally resolve something in the params? No. `filename` doesn't start with `$var_`. `content` doesn't start with `$var_` (it's a full markdown string). `mode` is "write"/"append". None trigger resolution.
+- **Doubt — `{{embed:...}}` regex safety:** Pattern `\{\{embed:(\$var_\d+)\}\}` is non-greedy by anchoring on `\}\}`. Two markers in one string resolve independently. Verified.
+- **Path traversal safety:** `(session_dir / filename).resolve()` then `is_relative_to(session_dir.resolve())`. Catches `../../etc/passwd`. Python 3.11 — `is_relative_to` available.
+
+**Design — read_session_md:**
+- Params: `filename` (relative to session_dir).
+- Returns file content as string. Same path traversal check.
+- **Doubt — context bloat from large reads:** Files are session-scoped (written by orchestrator itself). Bounded size. Acceptable.
+
+**Decision:** Two tools, two handlers in execute_tool.py, two entries in dispatch table, two schemas in TOOL_DEFINITIONS. No new files.

@@ -27,11 +27,15 @@ from src.stencil import CellResult, compute_stencil
 from src.harness.terminal_router import register
 from src.pto import (
     PTOBatchRequest,
+    PTOBatchResult,
     PTOCellResult,
+    PTOMethodLog,
     pto_retrieve,
     pto_judge,
     pto_judge_to_stencil,
 )
+from src.pumba import run_pumba
+from llama_index.core.schema import NodeWithScore
 
 _pto_out = register("PMS1")
 
@@ -87,9 +91,89 @@ def run(
         # ── PTO retrieval ──
         result = pto_retrieve(request, index, config)
 
-        # ── Judge + parse ──
+        # ── Judge ──
+        # CRITICAL: pto_judge is OUTSIDE the try block.
+        # JSONDecodeError (subclass of ValueError) from malformed judge
+        # output is a judge failure, not retrieval failure — PUMBA
+        # can't help with garbled JSON. Let it propagate.
         judge_output = pto_judge(request, result, config)
-        batch_values = pto_judge_to_stencil(judge_output, cell_map, result)
+
+        # ── Parse (PUMBA triggers here on ValueError) ──
+        try:
+            batch_values = pto_judge_to_stencil(
+                judge_output, cell_map, result
+            )
+        except ValueError as pto_err:
+            _pto_out.print(
+                f"PTO failed: {pto_err}. Falling back to PUMBA..."
+            )
+
+            pumba_ch = register(f"PUMBA-{request.firm}")
+
+            pumba_node_ids = run_pumba(
+                request, index, config, channel=pumba_ch
+            )
+
+            if not pumba_node_ids:
+                _pto_out.print(
+                    f"Batch {request.batch_id} skipped (PUMBA)."
+                )
+                continue
+
+            pumba_top_chunks = []
+            for i, nid in enumerate(pumba_node_ids):
+                node = index.docstore.docs.get(nid)
+                if node is None:
+                    _pto_out.print(
+                        f"PUMBA invalid node_id: {nid}, skipping"
+                    )
+                    continue
+                pumba_top_chunks.append(
+                    NodeWithScore(
+                        node=node,
+                        score=float(len(pumba_node_ids) - i),
+                    )
+                )
+
+            if not pumba_top_chunks:
+                _pto_out.print(
+                    "PUMBA returned no valid chunks after validation"
+                )
+                continue
+
+            pumba_result = PTOBatchResult(
+                batch_id=request.batch_id,
+                top_chunks=pumba_top_chunks,
+                runner_ups=[],
+                method_log=PTOMethodLog(
+                    hyde_good="PUMBA",
+                    hyde_bad="",
+                    metadata_filters={"method": "pumba_fallback"},
+                ),
+            )
+
+            try:
+                judge_output = pto_judge(
+                    request, pumba_result, config
+                )
+                batch_values = pto_judge_to_stencil(
+                    judge_output, cell_map, pumba_result
+                )
+            except ValueError as pumba_judge_err:
+                _pto_out.print(
+                    f"Judge failed on PUMBA chunks too: "
+                    f"{pumba_judge_err}"
+                )
+                answer = _pto_out.input(
+                    "PUMBA chunks also insufficient. "
+                    "'skip' to skip batch, 'exit' to abort:"
+                )
+                if answer.strip().lower() == "exit":
+                    raise pto_err
+                _pto_out.print(
+                    f"Batch {request.batch_id} skipped."
+                )
+                continue
 
         # ── Convert PTOCellResult → CellResult ──
         # PTOCellResult is pto.py's own type, structurally identical to

@@ -25,6 +25,18 @@ LLM-orchestrated tools with CLI user interaction at any depth.
 | 04 | `04_system_prompt.md` | Orchestrator system prompt, what it knows about tools, handle routing instructions | DONE |
 | 05 | `05_execute_tool.md` | execute_tool dispatch, how tools are registered, error handling, how results are returned | DONE |
 
+### Layer 1b: Session lifecycle
+
+| # | Spec | What it covers | Status |
+|---|---|---|---|
+| 11 | `11_repl_loop.md` | Outer REPL: interactive prompt, follow-ups, session state persistence, exit handling | TODO |
+
+### Layer 1c: PMS1-internal retrieval
+
+| # | Spec | What it covers | Status |
+|---|---|---|---|
+| 12 | `12_PUMBA.md` | PUMBA fallback: Dailo/Gulei/Leng 3-tier LLM retrieval when PTO BM25 fails, orchestrator.py integration | TODO |
+
 ### Layer 2: Tool contracts (one per tool)
 
 Every process that PSOAS can call needs a tool contract spec.

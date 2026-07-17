@@ -1,15 +1,15 @@
 """
 tool_pteca.py — PTECA: Poony Table Et Chart Agent.
 
-Internal agent loop that takes a stencil dict + user query, decides
-which metrics to keep, groups by unit, and outputs chart_input dicts
-for stencil2chart. Has its own while loop, messages, LLM calls, and
-tools (pteca_ask_user + finalize). The orchestrator never sees PTECA's
-internal conversation.
+Internal agent loop that takes one or more stencil dicts + user query,
+presents charting options with ASCII previews, iterates with the user,
+and outputs chart_input dicts for stencil2chart. Has its own while
+loop, messages, LLM calls, and tools (pteca_ask_user + finalize).
+The orchestrator never sees PTECA's internal conversation.
 
 Usage:
-    from src.tool_pteca import run_pteca
-    chart_inputs = run_pteca(stencil_dict, "gross margins", "Best Buy", channel=ch)
+    from src.tools.tool_pteca import run_pteca
+    chart_inputs = run_pteca([stencil_bby, stencil_ba], "compare margins", channel=ch)
 """
 
 from __future__ import annotations
@@ -25,14 +25,19 @@ PTECA_TOOLS = [
     {
         "name": "pteca_ask_user",
         "description": (
-            "Ask the user a clarifying question about what they want charted."
+            "Ask the user about chart layout preferences. Present "
+            "options with ASCII chart sketches showing the approximate "
+            "shape of the data."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "question": {
                     "type": "string",
-                    "description": "The question to ask.",
+                    "description": (
+                        "The question to ask, including ASCII chart "
+                        "previews and options."
+                    ),
                 },
             },
             "required": ["question"],
@@ -41,8 +46,8 @@ PTECA_TOOLS = [
     {
         "name": "finalize",
         "description": (
-            "Output your final chart decisions. Each chart groups "
-            "metrics with the same unit."
+            "Output final chart decisions after user confirms layout. "
+            "Each chart groups metrics with compatible units."
         ),
         "input_schema": {
             "type": "object",
@@ -53,14 +58,42 @@ PTECA_TOOLS = [
                         "type": "object",
                         "properties": {
                             "title": {"type": "string"},
+                            "periods": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": (
+                                    "Explicit period list for this "
+                                    "chart's X-axis."
+                                ),
+                            },
                             "denomination_label": {"type": "string"},
                             "metrics": {
                                 "type": "array",
-                                "items": {"type": "string"},
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "firm": {
+                                            "type": "string",
+                                            "description": (
+                                                "Firm name — must match "
+                                                "stencil firm exactly."
+                                            ),
+                                        },
+                                        "metric": {
+                                            "type": "string",
+                                            "description": (
+                                                "Metric name — must match "
+                                                "stencil row name exactly."
+                                            ),
+                                        },
+                                    },
+                                    "required": ["firm", "metric"],
+                                },
                             },
                         },
                         "required": [
                             "title",
+                            "periods",
                             "denomination_label",
                             "metrics",
                         ],
@@ -73,47 +106,100 @@ PTECA_TOOLS = [
 ]
 
 PTECA_SYSTEM_PROMPT = """\
-You are PTECA — a chart planning agent. You receive a financial
-data stencil and a user query. Your job is to decide which metrics
-to chart, how to group them, and what to title each chart.
+You are PTECA — a chart planning agent. You receive one or more
+financial data stencils (each from a different company) and a user
+query. Your job is to decide how to chart the data.
 
 ## What you receive
 
-A stencil with rows of financial metrics for a company. Each row has:
-- metric name (e.g. "Revenue", "Gross Margin")
-- values per period
-- unit (e.g. "USD", "%")
-- denomination (e.g. "bn", "mn", "unit")
+One or more stencils, each with:
+- firm name
+- periods (e.g. FY2020, FY2021, FY2022)
+- rows of financial metrics, each with: metric name, values per
+  period, unit (e.g. "%", "USD"), denomination (e.g. "bn", "mn")
 
-And the user's original query describing what they want charted.
+And the user's query describing what they want charted.
 
-## What you do
+## What you MUST do
 
-1. Read the stencil rows and the user's query.
-2. Decide which metrics the user wants charted.
-   - If the query is clear (e.g. "gross margins only"), decide directly.
-   - If ambiguous, use pteca_ask_user to clarify.
-3. Group metrics by unit compatibility:
-   - % metrics go in one chart (denomination_label: "(%)")
-   - USD metrics go in another chart (include denomination in label)
-   - Different units cannot share a Y-axis.
-4. Call finalize with your decisions.
+1. Analyze the stencils. Note:
+   - How many firms
+   - Which metrics each firm has (highlight near-matches like
+     "Net profit margin" vs "Net margin")
+   - Period coverage per firm (highlight mismatches)
+   - Unit compatibility (% vs USD — cannot share a Y-axis)
+
+2. ALWAYS present options to the user using pteca_ask_user.
+   Even for single-firm, single-metric cases — always ask.
+
+   Present 2-3 layout options. For each option, show a data preview
+   table of what each chart would contain. Use aligned columns with
+   spaces (not pipe tables). Example:
+
+   **OPTION A — Comparison by metric**
+
+   Chart 1: "Gross Margin Comparison"
+                    FY2020    FY2021
+   Best Buy          23.0%     22.4%
+   Boeing            -9.8%      4.8%
+
+   Chart 2: "Net Margin Comparison"
+   (same format with net margin values)
+
+   **OPTION B — Per firm**
+   (tables showing all metrics per firm)
+
+   For multi-firm cases, typical options:
+   A) Comparison by metric — both firms on same chart per metric
+   B) Per-firm — all metrics per firm on separate charts
+   C) Everything on one chart (only if units are compatible)
+
+   If periods don't fully overlap across firms, state the mismatch
+   and offer: intersect only, pad missing with 0, or leave gaps.
+
+   End with: "Or describe your own layout."
+
+3. Read the user's response. They may:
+   - Pick an option (A/B/C) → finalize immediately, no reconfirm needed
+   - Describe a custom layout → redraw ASCII preview, ask to confirm,
+     iterate until user says yes
+   - Adjust your suggestion → same as custom, redraw + confirm
+
+4. Call finalize with the confirmed chart decisions.
+
+## Finalize format
+
+Each chart in finalize has:
+- title: chart title string
+- periods: explicit list of periods for the X-axis
+- denomination_label: Y-axis label (e.g. "(%)", "(USD bn)")
+- metrics: list of {firm, metric} objects — firm and metric names
+  must match stencil data EXACTLY
+
+For multi-firm charts, the legend will automatically show
+"Firm - Metric" (e.g. "Best Buy - Gross margin"). For single-firm
+charts, just the metric name is shown.
 
 ## Rules
 
+- You MUST call pteca_ask_user at least once before finalize.
 - You MUST call finalize to complete. Do not end without calling it.
-- Metric names in finalize must match stencil row names EXACTLY.
-- Do not invent metrics that aren't in the stencil.
-- Keep it concise. Ask at most 1-2 questions.
-- If the user's intent is clear, skip pteca_ask_user and finalize directly."""
+- If the user says "cancel", "skip", "nevermind", or otherwise
+  wants to abort charting, call finalize with an empty charts list.
+  This exits cleanly — do not keep asking.
+- Metric names must match stencil row names EXACTLY.
+- Firm names must match stencil firm names EXACTLY.
+- Do not invent metrics or firms not in the stencils.
+- Use markdown pipe tables for data previews, not ASCII art.
+- Do not call finalize in the same turn as pteca_ask_user.
+- No emojis except 💦. No others. Ever."""
 
-MAX_TURNS = 4
+MAX_TURNS = 8
 
 
 def run_pteca(
-    stencil: dict,
+    stencils: list[dict],
     query: str,
-    firm: str,
     channel: ToolChannel | None = None,
 ) -> list[dict]:
     """Run PTECA agent loop. Returns list of chart_input dicts."""
@@ -127,18 +213,19 @@ def run_pteca(
     max_tokens = profile["max_tokens"]
 
     # Format input
-    user_msg = _format_pteca_input(stencil, query)
+    user_msg = _format_pteca_input(stencils, query)
+    firms = [s["firm"] for s in stencils]
+    total_rows = sum(len(s["rows"]) for s in stencils)
     ch.print(
-        f"Stencil has {len(stencil['rows'])} rows: "
-        + ", ".join(r["metric"] for r in stencil["rows"])
-        + "."
+        f"{len(firms)} firm(s), {total_rows} total rows: "
+        + ", ".join(firms)
     )
 
     messages = [{"role": "user", "content": user_msg}]
     turn_counter = 0
 
     while turn_counter < MAX_TURNS:
-        _router.start_spinner(f"PTECA-{firm}")
+        _router.start_spinner(ch.label)
         try:
             response = client.messages.create(
                 model=model,
@@ -189,7 +276,8 @@ def run_pteca(
         for tb in tool_blocks:
             if tb.name == "pteca_ask_user":
                 question = tb.input["question"]
-                answer = ch.input(question)
+                ch.print(question, markdown=True)
+                answer = ch.input("")
                 tool_results.append({
                     "type": "tool_result",
                     "tool_use_id": tb.id,
@@ -213,29 +301,39 @@ def run_pteca(
                     })
                 else:
                     charts_decisions = tb.input["charts"]
-                    chart_inputs = _build_chart_inputs(
-                        stencil, charts_decisions
-                    )
-                    if not chart_inputs:
+
+                    # Empty charts list = user cancelled
+                    if not charts_decisions:
+                        finalize_result = []
                         tool_results.append({
                             "type": "tool_result",
                             "tool_use_id": tb.id,
-                            "content": (
-                                "Error: no valid charts produced. All "
-                                "metric names were invalid. Check "
-                                "stencil row names."
-                            ),
+                            "content": "Cancelled. No charts produced.",
                         })
                     else:
-                        finalize_result = chart_inputs
-                        tool_results.append({
-                            "type": "tool_result",
-                            "tool_use_id": tb.id,
-                            "content": (
-                                f"Finalized. {len(chart_inputs)} chart(s) "
-                                "built."
-                            ),
-                        })
+                        chart_inputs = _build_chart_inputs(
+                            stencils, charts_decisions
+                        )
+                        if not chart_inputs:
+                            tool_results.append({
+                                "type": "tool_result",
+                                "tool_use_id": tb.id,
+                                "content": (
+                                    "Error: no valid charts produced. "
+                                    "All metric/firm names were invalid. "
+                                    "Check stencil data."
+                                ),
+                            })
+                        else:
+                            finalize_result = chart_inputs
+                            tool_results.append({
+                                "type": "tool_result",
+                                "tool_use_id": tb.id,
+                                "content": (
+                                    f"Finalized. {len(chart_inputs)} "
+                                    "chart(s) built."
+                                ),
+                            })
 
             else:
                 tool_results.append({
@@ -259,50 +357,97 @@ def run_pteca(
 
     # Exceeded max turns
     ch.print("Error: exceeded max turns without finalize.")
-    raise RuntimeError("PTECA exceeded 4 turns without calling finalize.")
+    raise RuntimeError("PTECA exceeded max turns without calling finalize.")
 
 
-def _format_pteca_input(stencil: dict, query: str) -> str:
-    lines = [f"Firm: {stencil['firm']}"]
-    lines.append(f"Periods: {', '.join(stencil['periods'])}")
-    lines.append("")
-    lines.append("Stencil rows:")
-    for row in stencil["rows"]:
-        vals = ", ".join(str(v) for v in row["values"])
-        unit_info = ""
-        if row["unit"]:
-            unit_info = f" [{row['unit']}"
-            if row["denomination"]:
-                unit_info += f", {row['denomination']}"
-            unit_info += "]"
-        lines.append(f"  - {row['metric']}{unit_info}: {vals}")
-    lines.append("")
+def _format_pteca_input(stencils: list[dict], query: str) -> str:
+    """Format multiple stencils + pre-built option tables for PTECA."""
+    lines = [f"Number of firms: {len(stencils)}", ""]
+
+    # Raw stencil data
+    for stencil in stencils:
+        lines.append(f"### {stencil['firm']}")
+        lines.append(f"Periods: {', '.join(stencil['periods'])}")
+        lines.append("Rows:")
+        for row in stencil["rows"]:
+            vals = ", ".join(str(v) for v in row["values"])
+            unit_info = ""
+            if row.get("unit"):
+                unit_info = f" [{row['unit']}"
+                if row.get("denomination"):
+                    unit_info += f", {row['denomination']}"
+                unit_info += "]"
+            lines.append(f"  - {row['metric']}{unit_info}: {vals}")
+        lines.append("")
+
     lines.append(f"User query: {query}")
+    lines.append("")
+
     return "\n".join(lines)
 
 
 def _build_chart_inputs(
-    stencil: dict, charts: list[dict]
+    stencils: list[dict], charts: list[dict]
 ) -> list[dict]:
     """Build chart_input dicts from finalize decisions + stencil data.
-    Values looked up mechanically — never LLM-generated."""
-    row_by_metric = {row["metric"]: row for row in stencil["rows"]}
+
+    Handles multi-stencil period alignment. Missing values are padded
+    with 0 (dummy value for plotting). For multi-firm charts, series
+    metric names are prefixed with firm name.
+    """
+    multi_firm = len(stencils) > 1
+
+    # Index: {firm_name: {"rows": {metric: row}, "periods": [...]}}
+    by_firm: dict[str, dict] = {}
+    for s in stencils:
+        firm = s["firm"]
+        by_firm[firm] = {
+            "rows": {row["metric"]: row for row in s["rows"]},
+            "periods": s["periods"],
+        }
+
     result = []
     for chart in charts:
+        chart_periods = chart["periods"]
         series = []
-        for metric_name in chart["metrics"]:
-            row = row_by_metric.get(metric_name)
+        for metric_spec in chart["metrics"]:
+            firm = metric_spec["firm"]
+            metric_name = metric_spec["metric"]
+
+            firm_data = by_firm.get(firm)
+            if firm_data is None:
+                continue
+            row = firm_data["rows"].get(metric_name)
             if row is None:
                 continue
+
+            # Align values to chart_periods
+            firm_periods = firm_data["periods"]
+            period_to_idx = {p: i for i, p in enumerate(firm_periods)}
+            aligned_values = []
+            for p in chart_periods:
+                idx = period_to_idx.get(p)
+                if idx is not None:
+                    aligned_values.append(row["values"][idx])
+                else:
+                    aligned_values.append(0)  # pad missing
+
+            # Legend name
+            if multi_firm:
+                legend = f"{firm} - {metric_name}"
+            else:
+                legend = metric_name
+
             series.append({
-                "metric": metric_name,
-                "values": row["values"],
+                "metric": legend,
+                "values": aligned_values,
             })
+
         if not series:
             continue
         result.append({
             "title": chart["title"],
-            "periods": stencil["periods"],
+            "periods": chart_periods,
             "denomination_label": chart["denomination_label"],
             "series": series,
         })

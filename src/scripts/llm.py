@@ -336,3 +336,15 @@ def get_pto_hyde_llm(config: Config) -> LLMBackend:
 def get_pto_judge_llm(config: Config) -> LLMBackend:
     """PTO judge LLM — extraction + sufficiency check on retrieved chunks."""
     return _get(config, "pto_judge_profile")
+
+
+# ── PUMBA factories ──────────────────────────────────────────────────────
+
+def get_pumba_gulei_llm(config: Config) -> LLMBackend:
+    """PUMBA GuleiPai/GuleiSau LLM — chunk selection and review."""
+    return _get(config, "pumba_gulei_profile")
+
+
+def get_pumba_leng_llm(config: Config) -> LLMBackend:
+    """PUMBA Leng LLM — chunk screening (cheapest model)."""
+    return _get(config, "pumba_leng_profile")

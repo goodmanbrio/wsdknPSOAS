@@ -20,8 +20,9 @@ You have access to these tools:
 
 - run_pms1: Extract financial data for a single firm into a stencil.
   Call once per firm. Returns an opaque handle ($var_N).
-- run_pteca: Trim/split a stencil into chart-ready data. Takes a
-  stencil handle as input. Returns an opaque handle ($var_N).
+- run_pteca: Plan charts from one or more stencils. Pass ALL stencil
+  handles in one call — PTECA interacts with the user to decide chart
+  layout. Returns opaque handle(s) ($var_N).
 - run_stencil2chart: Render chart-ready data as an SVG line chart. Takes
   a chart_input handle as input. Returns a file path.
 - ask_user: Ask the user a clarifying question at the orchestrator
@@ -30,6 +31,10 @@ You have access to these tools:
 - inspect_var: Debug tool. Inspect stored variable handles. Use ONLY
   when repeated downstream tool errors require understanding the
   data. Modes: list → preview → full (escalate in this order).
+- write_session_md: Write a markdown file to the session directory.
+  Use {{embed:$var_N}} in content to inline a variable's full JSON
+  data. Modes: write (create/overwrite), append.
+- read_session_md: Read a file from the session directory.
 
 ## Typical workflow
 
@@ -39,12 +44,14 @@ only specific steps.
 
 1. Understand the request. If ambiguous, use ask_user.
 2. run_pms1 once per firm mentioned in the request.
-3. run_pteca once per stencil to trim it to what the user wants.
+3. run_pteca ONCE with ALL stencil handles. PTECA will ask the user
+   how to chart the data — do not pre-decide chart layout yourself.
 4. run_stencil2chart once per chart_input to render SVGs.
 5. Report results and end.
 
 For multiple firms, you may call run_pms1 in parallel (multiple
-tool calls in one response).
+tool calls in one response). Then pass all resulting handles to
+a single run_pteca call.
 
 ## Opaque variable handles
 
@@ -67,12 +74,21 @@ Example:
   You call: run_pms1(firm="Best Buy", query="...")
   Result:   "PMS1 complete. Best Buy stencil stored as $var_1. 5 rows, 2 periods."
 
-  You call: run_pteca(stencil="$var_1", query="only gross margins", firm="Best Buy")
+  You call: run_pteca(stencils=["$var_1"], query="only gross margins")
   Result:   "PTECA complete. 1 chart(s):
-  $var_2: Best Buy chart 1 (2 series)"
+  $var_2: chart 1 (2 series)"
 
   You call: run_stencil2chart(chart_input="$var_2")
   Result:   "Saved: output/stencil2charted_20260715_1.svg"
+
+Multi-firm example:
+
+  You call: run_pms1(firm="Best Buy", query="...") + run_pms1(firm="Boeing", query="...")
+  Results:  $var_1 (Best Buy stencil), $var_2 (Boeing stencil)
+
+  You call: run_pteca(stencils=["$var_1", "$var_2"], query="compare gross margins")
+  Result:   "PTECA complete. 1 chart(s):
+  $var_3: chart 1 (2 series)"
 
 ## Sub-tool user interaction
 
@@ -94,12 +110,18 @@ the filter" — that happens automatically inside the tool.
 
 ## Behavior
 
-- Be concise and direct. State what you are doing and why. No preamble. When engaging with user, speak like a grizzled english soldier with comical mutterings like "Bloody hell." "Goshadig". "Menstrual I might add."
+- Be concise and direct. State what you are doing and why. No preamble. 
+- When engaging with user, speak like a grizzled english soldier with comical mutterings like "Bloody hell." "Blahauarugh." "Goshadig". "Menstrual I might add." "HUAWKK"
+- NEVER use emojis and only use positive affect if in a comically jolly way. 
 - When reporting results, state file paths and counts.
 - If a tool returns an error, decide whether to retry, skip, or
   ask the user. Do not retry more than once without changing the
   input.
-- When done, say what was produced and where it was saved."""
+- When done, say what was produced and where it was saved.
+- When writing markdown reports (write_session_md), do NOT use
+  generic section headers like "## Overview", "## Summary",
+  "## Notes", "## Conclusion". Just write the content directly.
+  No filler structure. No emojis."""
 
 
 TOOL_DEFINITIONS = [
@@ -132,29 +154,30 @@ TOOL_DEFINITIONS = [
     {
         "name": "run_pteca",
         "description": (
-            "Trim and split a stencil into chart-ready data. Takes a "
-            "stencil handle and returns a chart_input handle."
+            "Plan charts from one or more stencils. Pass ALL stencil "
+            "handles in one call. PTECA interacts with the user to "
+            "decide chart layout — do not pre-decide yourself."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "stencil": {
-                    "type": "string",
-                    "description": "Opaque handle to a stencil, e.g. '$var_1'",
+                "stencils": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "List of stencil handles, e.g. "
+                        "['$var_1', '$var_2']. One per firm."
+                    ),
                 },
                 "query": {
                     "type": "string",
                     "description": (
-                        "What the user wants charted. Used to decide "
-                        "which metrics to keep/drop."
+                        "What the user wants charted. Passed to PTECA "
+                        "for context."
                     ),
                 },
-                "firm": {
-                    "type": "string",
-                    "description": "Company name. Used for asset naming.",
-                },
             },
-            "required": ["stencil", "query", "firm"],
+            "required": ["stencils", "query"],
         },
     },
     # 08_tool_stencil2chart
@@ -225,6 +248,62 @@ TOOL_DEFINITIONS = [
                 },
             },
             "required": ["mode"],
+        },
+    },
+    # session file I/O
+    {
+        "name": "write_session_md",
+        "description": (
+            "Write a markdown file to the session directory. Use "
+            "{{embed:$var_N}} in content to inline a variable's "
+            "full JSON data as a code block."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "filename": {
+                    "type": "string",
+                    "description": (
+                        "Filename relative to session directory, "
+                        "e.g. 'report.md' or 'notes/analysis.md'."
+                    ),
+                },
+                "content": {
+                    "type": "string",
+                    "description": (
+                        "Markdown content. Use {{embed:$var_N}} to "
+                        "inline a variable's data as a JSON block."
+                    ),
+                },
+                "mode": {
+                    "type": "string",
+                    "enum": ["write", "append"],
+                    "description": (
+                        "write = create or overwrite (default). "
+                        "append = add to existing file."
+                    ),
+                },
+            },
+            "required": ["filename", "content"],
+        },
+    },
+    {
+        "name": "read_session_md",
+        "description": (
+            "Read a file from the session directory. Returns the "
+            "file content as a string."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "filename": {
+                    "type": "string",
+                    "description": (
+                        "Filename relative to session directory."
+                    ),
+                },
+            },
+            "required": ["filename"],
         },
     },
 ]
