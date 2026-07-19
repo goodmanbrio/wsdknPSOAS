@@ -11,6 +11,7 @@ Usage:
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass
 
@@ -85,11 +86,27 @@ def compute_stencil(
         for ref in sorted(resolved, key=len, reverse=True):
             expr = expr.replace(ref, str(resolved[ref].value))
         try:
-            computed_val = eval(expr)  # noqa: S307
+            computed_val = eval(  # noqa: S307
+                expr,
+                {"nan": float("nan"), "inf": float("inf"),
+                 "__builtins__": {}},
+            )
         except Exception as exc:
             raise ValueError(
                 f"Failed to eval {cell_id} = {cell.formula} → {expr}: {exc}"
             )
+
+        if isinstance(computed_val, float) and math.isnan(computed_val):
+            refs = re.findall(r"[A-Z]\d+", cell.formula)
+            nan_inputs = [
+                r for r in refs
+                if r in resolved and math.isnan(resolved[r].value)
+            ]
+            _pto_out.print(
+                f"⚠ {cell_id} = {cell.formula} → NaN "
+                f"(failed input cells: {', '.join(nan_inputs)})"
+            )
+
         resolved[cell_id] = CellResult(
             value=computed_val,
             source=cell.formula,
@@ -210,6 +227,10 @@ def serialize_stencil(
             if cell.type == "compute" and not results[cell_id].unit:
                 value = round(value * 100, 4)
                 row_data[row]["unit"] = "%"
+
+            # NaN/inf → None for JSON safety (RFC 8259 forbids NaN/Infinity)
+            if isinstance(value, float) and (math.isnan(value) or math.isinf(value)):
+                value = None
 
             row_data[row]["values"][col] = value
             if results[cell_id].denomination:

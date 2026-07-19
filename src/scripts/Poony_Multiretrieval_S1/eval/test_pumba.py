@@ -79,9 +79,8 @@ from src.pumba import (
     _parse_json_with_fences,
     _build_leng_prompt,
     _build_gulei_pai_prompt,
-    LENG_SYSTEM,
-    GULEI_PAI_SYSTEM,
 )
+from src.harness.sysprompts import load_sysprompt
 from src.harness.terminal_router import register
 
 _CASES_PATH = _project_root / "eval" / "pto_test_cases.yaml"
@@ -250,14 +249,24 @@ def run_pumba_judge_test(
     # Run judge
     try:
         judge_output = pto_judge(request, pumba_result, config)
-        batch_values = pto_judge_to_stencil(
-            judge_output, cell_map, pumba_result
-        )
     except ValueError as e:
         return {
             "id": case["id"],
             "status": "JUDGE_FAIL",
             "error": str(e),
+            "node_ids": node_ids,
+            "elapsed": time.time() - t0,
+        }
+
+    stencil_result = pto_judge_to_stencil(
+        judge_output, cell_map, pumba_result
+    )
+    if stencil_result.failures:
+        failed = ", ".join(f"{m} ({cid})" for cid, m in stencil_result.failures)
+        return {
+            "id": case["id"],
+            "status": "JUDGE_FAIL",
+            "error": f"Failed cells: {failed}",
             "node_ids": node_ids,
             "elapsed": time.time() - t0,
         }
@@ -268,7 +277,7 @@ def run_pumba_judge_test(
     expected = case.get("expected_values", {})
     verdicts = {}
     extracted = {}
-    for cell_id, pcr in batch_values.items():
+    for cell_id, pcr in stencil_result.values.items():
         metric = cell_map[cell_id]
         extracted[metric] = pcr.value
         if metric in expected:
@@ -305,6 +314,7 @@ def test_leng_tier(index, config: Config) -> None:
     from src.llm import get_pumba_leng_llm
 
     leng_llm = get_pumba_leng_llm(config)
+    leng_sys = load_sysprompt("pumba_leng", config.pumba_leng_profile)
 
     # Find a known Best Buy income statement chunk
     target_file = "BESTBUY_2023_10K.md"
@@ -349,7 +359,7 @@ def test_leng_tier(index, config: Config) -> None:
     t0 = time.time()
     result = _run_leng(
         test_nid, test_text, target_file, test_section,
-        request, leng_llm,
+        request, leng_llm, leng_sys,
     )
     elapsed = time.time() - t0
 
@@ -379,6 +389,7 @@ def test_gulei_pai_tier(index, config: Config) -> None:
     from src.llm import get_pumba_gulei_llm
 
     gulei_llm = get_pumba_gulei_llm(config)
+    gulei_pai_sys = load_sysprompt("pumba_gulei_pai", config.pumba_gulei_profile)
 
     # Build table_chunks for BESTBUY_2023_10K.md
     target_file = "BESTBUY_2023_10K.md"
@@ -409,7 +420,7 @@ def test_gulei_pai_tier(index, config: Config) -> None:
     )
 
     t0 = time.time()
-    picks = _run_gulei_pai(table_chunks, request, gulei_llm)
+    picks = _run_gulei_pai(table_chunks, request, gulei_llm, system_prompt=gulei_pai_sys)
     elapsed = time.time() - t0
 
     print(f"GuleiPai result ({elapsed:.1f}s):")

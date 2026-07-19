@@ -18,12 +18,16 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 
+# Project root — absolute anchor for session_dir and debug_dir
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+
 from rich.panel import Panel
 
 from src.harness.terminal_router import register, console, _router, harvest_logs
-from src.harness.execute_tool import execute_tool, set_session_dir, reset_counters
+from src.harness.execute_tool import execute_tool, set_session_dir, set_debug_dir, reset_counters
 from src.harness.opaque_registry import registry
-from src.harness.system_prompt import SYSTEM_PROMPT, TOOL_DEFINITIONS
+from src.harness.system_prompt import TOOL_DEFINITIONS
+from src.harness.sysprompts import load_sysprompt
 from src.config import Config
 from src.llm import get_orchestrator_llm, LLMResponse, ToolCall
 
@@ -127,16 +131,22 @@ def run_harness(
     reset_counters()
 
     config = config or Config.from_env()
+    system_prompt = load_sysprompt("orchestrator", config.orchestrator_profile)
     backend = get_orchestrator_llm(config)
 
     # Session dir + transcript
-    ts = datetime.now().strftime("%Y%m%d%H%M%S")
-    session_dir = Path(f"temp/sessions/{ts}")
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    session_dir = PROJECT_ROOT / "temp" / "sessions" / ts
     session_dir.mkdir(parents=True, exist_ok=True)
     transcript = session_dir / "transcript.md"
     transcript.write_text(f"# PSOAS Session {ts}\n")
 
+    # Debug trace output dir (cross-referenced by timestamp)
+    debug_dir = PROJECT_ROOT / "tests" / "debug" / ts
+    debug_dir.mkdir(parents=True, exist_ok=True)
+
     set_session_dir(session_dir)
+    set_debug_dir(debug_dir)
 
     # Propagate config to execute_tool dispatchers (PTECA reads it)
     from src.harness.execute_tool import set_config
@@ -193,7 +203,7 @@ def run_harness(
             try:
                 response = backend.call_with_tools(
                     messages=messages,
-                    system_prompt=SYSTEM_PROMPT,
+                    system_prompt=system_prompt,
                     tools=TOOL_DEFINITIONS,
                 )
             finally:
@@ -293,7 +303,7 @@ def run_harness(
                 try:
                     summary = backend.call_with_tools(
                         messages=messages,
-                        system_prompt=SYSTEM_PROMPT,
+                        system_prompt=system_prompt,
                         tools=[],
                         max_tokens=1024,
                     )

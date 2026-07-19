@@ -30,6 +30,7 @@ from llama_index.core import VectorStoreIndex
 from llama_index.core.schema import NodeWithScore
 
 from src.config import Config, FIRM_SYNONYMS
+from src.harness.sysprompts import load_sysprompt
 from src.harness.terminal_router import register
 
 _pto_out = register("PMS1")
@@ -322,57 +323,6 @@ def _all_statement_titles(ref: dict, exclude: str | None = None) -> str:
     return " ".join(parts)
 
 
-# ── LLM fallback prompt for non-standard tables ─────────────────
-
-_HYDE_GOOD_SYSTEM = """\
-You generate BM25 search keywords for financial table retrieval.
-
-## Why this matters
-These keywords are fed to BM25 (keyword matching). BM25 scores documents \
-by exact word overlap — it has no semantic understanding. "company's \
-top-line performance" scores ZERO against a table containing "Revenue". \
-Only output words/phrases that literally appear in the target table or \
-its surrounding context.
-
-## What a table chunk looks like in our corpus
-Tables are pipe-delimited markdown extracted from filings:
-
-```
-Revenue by Operating Segment
-
-| | Fiscal 2023 | Fiscal 2022 | Change |
-|---|---|---|---|
-| United States | $8,241 | $7,890 | 4.4% |
-| International | $3,102 | $2,944 | 5.4% |
-| Total | $11,343 | $10,834 | 4.7% |
-```
-
-Good keywords for this table: "Revenue by Operating Segment" \
-"United States" "International" "Fiscal 2023" "Fiscal 2022"
-
-## Your task
-Given a company, table type, and metrics — generate keywords that would \
-appear in or near the correct table. Think about:
-1. Section header above the table (e.g. "Revenue by Operating Segment")
-2. Column headers (e.g. "Fiscal 2022", "Year Ended December 31")
-3. Row labels (e.g. "United States", "Domestic", "International")
-4. Nearby prose anchors (e.g. "The following table summarizes")
-5. Alternative names for the same data (e.g. "geographic" vs "by region")
-
-## Rules
-- Every keyword must be a plausible exact string in a real filing
-- Do NOT output generic terms ("financial data", "company performance", \
-"key metrics", "results", "summary")
-- Do NOT output standard financial statement headers ("Consolidated \
-Statements of Earnings", "Balance Sheet") — those are handled separately
-- Prefer multi-word phrases over single words when the phrase is specific \
-(e.g. "Revenue by Segment" not just "Revenue")
-
-## Output format
-JSON only, no explanation:
-{"hyde_good": "phrase one phrase two keyword1 keyword2 ..."}
-"""
-
 
 def _generate_hyde(
     request: PTOBatchRequest,
@@ -444,7 +394,8 @@ def _llm_hyde_good(
     )
 
     llm = get_pto_hyde_llm(config)
-    raw = llm.complete(user_prompt, system_prompt=_HYDE_GOOD_SYSTEM)
+    hyde_sys = load_sysprompt("pto_hyde", config.pto_hyde_profile)
+    raw = llm.complete(user_prompt, system_prompt=hyde_sys, label="pto_hyde")
 
     # Parse JSON response
     text = raw.strip()
@@ -696,71 +647,25 @@ class PTOCellResult:
     unit: str             # "USD","RMB","JPY","GBP","EUR","%","count","none"
 
 
+@dataclass
+class JudgeStencilResult:
+    """Full judge parse — partial successes + all failures."""
+    values: dict[str, PTOCellResult]
+    failures: list[tuple[str, str]]   # [(cell_id, metric), ...]
+    judge_output: dict                # raw judge JSON
+
+
 # ═════════════════════════════════════════════════════════════════
 # Judge
 # ═════════════════════════════════════════════════════════════════
 
-def _build_judge_system() -> str:
+def _build_judge_system(config: Config) -> str:
     """Build judge system prompt with denomination/unit enums from JSON."""
     denom_str = " | ".join(_DENOMINATIONS)
     unit_str = " | ".join(_UNITS)
-
-    return f"""\
-You are a financial data extraction judge. Given retrieved table chunks \
-from a filing, extract exact numeric values for each requested metric.
-
-## Input
-You receive:
-- Firm, period, statement type, and a list of metrics to find
-- Retrieved chunks (numbered 0-N) with full text and metadata
-- Retrieval methodology used (for context, not action)
-- Runner-up chunks (metadata only, no text)
-
-## Task
-For each metric in the metrics list:
-1. Search all chunks for the exact numeric value
-2. If found: report the value, which chunk, denomination, and unit
-3. If not found in any chunk: mark insufficient
-
-## Denomination and unit extraction
-Financial tables specify denomination in headers or footnotes \
-(e.g. "In millions, except per share data", "amounts in thousands").
-
-denomination — the scale multiplier on the raw number. MUST be exactly one of:
-  {denom_str}
-
-  "unit" = number as-is, no multiplier (e.g. EPS, ratios, percentages)
-
-unit — what the number measures. MUST be exactly one of:
-  {unit_str}
-
-  "%" = percentage value
-  "count" = countable things (shares, stores, employees)
-  "none" = truly dimensionless (ratios, multiples)
-
-## Output format
-JSON only, no explanation:
-{{
-  "Revenue": {{"sufficient": true, "answer": 51761, "denomination": "mn", "unit": "USD", "source_chunk": 0}},
-  "Diluted EPS": {{"sufficient": true, "answer": 6.84, "denomination": "unit", "unit": "USD", "source_chunk": 0}},
-  "Gross Margin": {{"sufficient": true, "answer": 22.5, "denomination": "unit", "unit": "%", "source_chunk": 2}},
-  "Operating Income": {{"sufficient": false}}
-}}
-
-## Rules
-- answer must be a raw number — no commas, no currency symbols, no parentheses
-- For negative values (e.g. net loss): (2,454) → -2454
-- If a metric appears in multiple chunks, prefer the chunk where it sits \
-in the target statement (not notes/supplemental)
-- source_chunk is the 0-indexed chunk number
-- Do not fabricate values — if the number is not literally in a chunk, \
-mark insufficient
-- Read table headers carefully for denomination — a table header \
-"In millions" means the number 51,761 represents 51,761 million
-- Use the EXACT metric names from the input as your JSON keys. Do not \
-rename, abbreviate, or paraphrase them. If input says "Revenue", \
-output key must be "Revenue", not "Net Revenue" or "Total Revenue".
-"""
+    return load_sysprompt("pto_judge", config.pto_judge_profile,
+                          denomination_values=denom_str,
+                          unit_values=unit_str)
 
 
 def _build_judge_user_prompt(
@@ -827,7 +732,7 @@ def pto_judge(
 
     user_prompt = _build_judge_user_prompt(request, result)
     llm = get_pto_judge_llm(config)
-    raw, usage = llm.complete_with_usage(user_prompt, system_prompt=_build_judge_system())
+    raw, usage = llm.complete_with_usage(user_prompt, system_prompt=_build_judge_system(config), label="pto_judge")
 
     if usage:
         inp = usage.get("input_tokens", 0)
@@ -840,7 +745,20 @@ def pto_judge(
         text = re.sub(r"^```(?:json)?\s*", "", text)
         text = re.sub(r"\s*```$", "", text)
 
-    return json.loads(text)
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        # Aggressive extraction: LLM may wrap JSON in prose
+        # ("Sure! Here are the results: {...}") or append notes
+        # after closing fence. Find outermost {…} and retry.
+        start = text.find("{")
+        end = text.rfind("}")
+        if start != -1 and end > start:
+            try:
+                return json.loads(text[start:end + 1])
+            except json.JSONDecodeError:
+                pass
+        raise  # truly garbled — re-raise original
 
 
 # ═════════════════════════════════════════════════════════════════
@@ -851,50 +769,34 @@ def pto_judge_to_stencil(
     judge_output: dict,
     cell_map: dict[str, str],
     result: PTOBatchResult,
-) -> dict[str, PTOCellResult]:
-    """Map judge output to cell-keyed results for stencil.
+) -> JudgeStencilResult:
+    """Map judge output to cell-keyed results.
 
-    Args:
-        judge_output: Judge JSON keyed by metric name, e.g.
-            {"Revenue": {"sufficient": true, "answer": 51761, "denomination": "mn", "unit": "USD", "source_chunk": 0}}
-        cell_map: Flat mapping from orchestrator, e.g.
-            {"A1": "Revenue", "A2": "Gross Profit", "A4": "Net Income"}
-        result: PTOBatchResult — top_chunks used for provenance lookup.
-
-    Returns:
-        dict mapping cell IDs to PTOCellResult.
-
-    Raises:
-        ValueError: if any metric is missing or insufficient.
-            Retry loop not implemented — happy path only.
+    Does NOT raise on failure. Collects all failures and returns
+    them alongside partial successes.
     """
     values: dict[str, PTOCellResult] = {}
+    failures: list[tuple[str, str]] = []
 
     # Case-insensitive lookup: judge LLM may capitalize differently
-    # than Sekei (e.g. "Gross Profit" vs "Gross profit"). Build a
-    # lowercased index so one capital letter doesn't crash the pipeline.
+    # than Sekei (e.g. "Gross Profit" vs "Gross profit").
     judge_lower = {k.lower(): v for k, v in judge_output.items()}
 
     for cell_id, metric in cell_map.items():
         entry = judge_lower.get(metric.lower())
 
         if entry is None:
-            raise ValueError(
-                f"Judge output missing metric '{metric}' (cell {cell_id})"
-            )
+            failures.append((cell_id, metric))
+            continue
 
         if not entry.get("sufficient"):
-            raise ValueError(
-                f"Insufficient: metric '{metric}' (cell {cell_id}). "
-                f"Retry not implemented."
-            )
+            failures.append((cell_id, metric))
+            continue
 
-        chunk_idx = entry["source_chunk"]
+        chunk_idx = entry.get("source_chunk", -1)
         if chunk_idx < 0 or chunk_idx >= len(result.top_chunks):
-            raise ValueError(
-                f"Invalid source_chunk={chunk_idx} for metric '{metric}' "
-                f"(cell {cell_id}), top_chunks has {len(result.top_chunks)} entries"
-            )
+            failures.append((cell_id, metric))
+            continue
 
         chunk = result.top_chunks[chunk_idx]
         node_id = chunk.node.node_id
@@ -906,4 +808,8 @@ def pto_judge_to_stencil(
             unit=entry.get("unit", ""),
         )
 
-    return values
+    return JudgeStencilResult(
+        values=values,
+        failures=failures,
+        judge_output=judge_output,
+    )

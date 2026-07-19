@@ -18,12 +18,14 @@ from pathlib import Path
 from typing import Any, Callable
 
 from src.harness.opaque_registry import registry
-from src.harness.terminal_router import register
+from src.harness.terminal_router import register, console
+from src.harness.trace import get_current_trace, clear_current_trace
 from src.config import Config
 
 
 # ── Session state (set once per run_harness call) ─────────────────────
 _session_dir: Path | None = None
+_debug_dir: Path | None = None
 
 # ── Module-level channels ─────────────────────────────────────────────
 _orchestrator_channel = register("ORCHESTRATOR")
@@ -55,12 +57,18 @@ def set_session_dir(path: Path) -> None:
     _session_dir = path
 
 
+def set_debug_dir(path: Path) -> None:
+    global _debug_dir
+    _debug_dir = path
+
+
 def reset_counters() -> None:
     """Reset per-session state. Called by run_harness."""
-    global _s2c_counter, _config
+    global _s2c_counter, _config, _debug_dir
     with _s2c_lock:
         _s2c_counter = 0
     _config = None
+    _debug_dir = None
 
 
 # ── Handle resolution ─────────────────────────────────────────────────
@@ -108,7 +116,7 @@ def _exec_pms1(params: dict) -> str:
     query = params["query"]
     channel = register(f"PMS1-{firm}")
 
-    stencil = run_pms1_pipeline(firm, query, channel=channel)
+    stencil = run_pms1_pipeline(firm, query, channel=channel, debug_dir=_debug_dir, config=_config)
 
     handle = registry.store(stencil, f"{firm} stencil")
     _dump_asset(
@@ -132,7 +140,7 @@ def _exec_pteca(params: dict) -> str:
     label = "PTECA-" + "+".join(firms)
     channel = register(label)
 
-    chart_inputs = run_pteca(stencils, query, channel=channel, config=_config)
+    chart_inputs = run_pteca(stencils, query, channel=channel, config=_config, debug_dir=_debug_dir)
 
     if not chart_inputs:
         return "PTECA cancelled by user. No charts to render. Move on."
@@ -284,4 +292,19 @@ def execute_tool(name: str, params: dict) -> str:
         return handler(params)
 
     resolved = _resolve_handles(params)
-    return handler(resolved)
+    try:
+        return handler(resolved)
+    except Exception as e:
+        # Flush whatever the trace captured before the crash
+        trace = get_current_trace()
+        if trace and _debug_dir:
+            try:
+                filepath = trace.flush_to_disk(_debug_dir)
+                console.print(
+                    f"[bold red]\\[BUMMER][/bold red] "
+                    f"{name} failure logged → {filepath}"
+                )
+            except OSError:
+                pass
+        clear_current_trace()
+        return f"Error: {e}"

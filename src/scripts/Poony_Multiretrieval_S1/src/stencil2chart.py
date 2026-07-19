@@ -23,6 +23,7 @@ Usage:
 
 from __future__ import annotations
 
+import math
 from datetime import datetime
 from pathlib import Path
 
@@ -39,12 +40,12 @@ _call_counter = 0
 
 
 def _check_gaps(chart_input: dict) -> list[str]:
-    """Scan series for None values. Return list of gap descriptions."""
+    """Scan series for None or NaN values. Return list of gap descriptions."""
     gaps = []
     for s in chart_input.get("series", []):
         periods = chart_input.get("periods", [])
         for i, v in enumerate(s.get("values", [])):
-            if v is None:
+            if v is None or (isinstance(v, float) and math.isnan(v)):
                 period = periods[i] if i < len(periods) else f"index {i}"
                 gaps.append(f"{s['metric']} @ {period}")
     return gaps

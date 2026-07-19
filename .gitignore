@@ -6,6 +6,9 @@ src/scripts/Poony_Multiretrieval_S1/output/
 # Sessions (generated at runtime)
 temp/
 
+# Debug trace output
+tests/debug/
+
 # Python
 __pycache__/
 *.pyc

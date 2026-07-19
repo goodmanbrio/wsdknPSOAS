@@ -19,8 +19,12 @@ import sys
 from pathlib import Path
 
 _project_root = Path(__file__).resolve().parent.parent
+_psoas_root = _project_root.parent.parent.parent  # PMS1 → scripts → src → PSOAS
+
+if str(_psoas_root) not in sys.path:
+    sys.path.insert(0, str(_psoas_root))
 if str(_project_root) not in sys.path:
-    sys.path.insert(0, str(_project_root))
+    sys.path.insert(1, str(_project_root))
 
 try:
     from dotenv import load_dotenv
@@ -166,20 +170,20 @@ def run_one(case: dict, index, config: Config) -> dict:
         print(f"  {json.dumps(judge_output, indent=2)}")
 
         # ── Parse to stencil ──
-        try:
-            batch_values = pto_judge_to_stencil(judge_output, cell_map, result)
-            print(f"\n  Parsed cells:")
-            for cell_id, pcr in batch_values.items():
-                print(f"    {cell_id}: value={pcr.value}  denom={pcr.denomination}  "
-                      f"unit={pcr.unit}  source={pcr.source[:20]}...")
-            # Convert PTOCellResult → CellResult
-            for cell_id, pcr in batch_values.items():
-                all_values[cell_id] = CellResult(
-                    value=pcr.value, source=pcr.source,
-                    denomination=pcr.denomination, unit=pcr.unit,
-                )
-        except ValueError as exc:
-            print(f"  PARSE ERROR: {exc}")
+        stencil_result = pto_judge_to_stencil(judge_output, cell_map, result)
+        print(f"\n  Parsed cells:")
+        for cell_id, pcr in stencil_result.values.items():
+            print(f"    {cell_id}: value={pcr.value}  denom={pcr.denomination}  "
+                  f"unit={pcr.unit}  source={pcr.source[:20]}...")
+        # Convert PTOCellResult → CellResult
+        for cell_id, pcr in stencil_result.values.items():
+            all_values[cell_id] = CellResult(
+                value=pcr.value, source=pcr.source,
+                denomination=pcr.denomination, unit=pcr.unit,
+            )
+        if stencil_result.failures:
+            failed = ", ".join(f"{m} ({cid})" for cid, m in stencil_result.failures)
+            print(f"  PARSE FAILURES: {failed}")
         print(f"--- END JUDGE ---")
 
     # ── Stencil eval ──

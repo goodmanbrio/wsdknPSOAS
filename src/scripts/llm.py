@@ -116,17 +116,19 @@ class LLMBackend(ABC):
     """Minimal interface for any chat-completion LLM."""
 
     @abstractmethod
-    def complete(self, prompt: str, system_prompt: str | None = None) -> str: ...
+    def complete(
+        self, prompt: str, system_prompt: str | None = None, label: str = "",
+    ) -> str: ...
 
     def complete_with_usage(
-        self, prompt: str, system_prompt: str | None = None
+        self, prompt: str, system_prompt: str | None = None, label: str = "",
     ) -> tuple[str, dict]:
         """Like complete(), but also returns a usage dict.
 
         Default: delegates to complete() with empty usage.
         Subclasses that can report token counts override this.
         """
-        return self.complete(prompt, system_prompt=system_prompt), {}
+        return self.complete(prompt, system_prompt=system_prompt, label=label), {}
 
     @abstractmethod
     def stream(self, prompt: str, system_prompt: str | None = None) -> Iterator[str]: ...
@@ -140,6 +142,7 @@ class LLMBackend(ABC):
         system_prompt: str,
         tools: list[dict],
         max_tokens: int | None = None,
+        label: str = "",
     ) -> LLMResponse:
         """Multi-turn tool calling. Override in backends that support tools."""
         raise NotImplementedError(
@@ -165,7 +168,14 @@ class OpenAICompatibleLLM(LLMBackend):
         self._max_tokens = max_tokens
         self._thinking = thinking
 
-    def complete(self, prompt: str, system_prompt: str | None = None) -> str:
+    def complete(
+        self, prompt: str, system_prompt: str | None = None, label: str = "",
+    ) -> str:
+        return self.complete_with_usage(prompt, system_prompt=system_prompt, label=label)[0]
+
+    def complete_with_usage(
+        self, prompt: str, system_prompt: str | None = None, label: str = "",
+    ) -> tuple[str, dict]:
         messages = self._build_messages(prompt, system_prompt)
         kwargs: dict = {
             "model": self._model,
@@ -176,7 +186,27 @@ class OpenAICompatibleLLM(LLMBackend):
         if self._thinking:
             kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
         resp = self._client.chat.completions.create(**kwargs)
-        return resp.choices[0].message.content or ""
+        text = resp.choices[0].message.content or ""
+
+        usage = {}
+        if hasattr(resp, "usage") and resp.usage:
+            usage = {
+                "input_tokens": getattr(resp.usage, "prompt_tokens", 0),
+                "output_tokens": getattr(resp.usage, "completion_tokens", 0),
+            }
+
+        # Trace recording
+        from src.harness.trace import get_current_trace
+        trace = get_current_trace()
+        if trace:
+            trace.record_llm_call(
+                messages=[{"role": "user", "content": prompt}],
+                response=text,
+                model=self._model,
+                label=label,
+            )
+
+        return text, usage
 
     def stream(self, prompt: str, system_prompt: str | None = None) -> Iterator[str]:
         messages = self._build_messages(prompt, system_prompt)
@@ -207,7 +237,7 @@ class OpenAICompatibleLLM(LLMBackend):
 
     _TOOL_TEXT_MAX_RETRIES = 3  # for V4 Pro tool-as-text bug
 
-    def call_with_tools(self, messages, system_prompt, tools, max_tokens=None):
+    def call_with_tools(self, messages, system_prompt, tools, max_tokens=None, label=""):
         effective_max = max_tokens if max_tokens is not None else self._max_tokens
         api_tools = self._tools_to_openai(tools)
         api_messages = self._messages_to_openai(messages, system_prompt)
@@ -232,8 +262,35 @@ class OpenAICompatibleLLM(LLMBackend):
             result = self._parse_openai_response(resp)
             if not (result.stop_reason == "end_turn" and tool_names
                     and any(name in result.text for name in tool_names)):
-                return result
+                break
+        # Trace recording
+        if result is not None:
+            from src.harness.trace import get_current_trace
+            trace = get_current_trace()
+            if trace:
+                trace.record_llm_call(
+                    messages=messages,
+                    response=self._serialize_llm_response(result),
+                    model=self._model,
+                    label=label,
+                )
         return result  # give up after retries
+
+    @staticmethod
+    def _serialize_llm_response(result: LLMResponse) -> str:
+        """Serialize LLMResponse to string for trace recording."""
+        parts = []
+        for block in result.raw_content:
+            if block["type"] == "text":
+                parts.append(block["text"])
+            elif block["type"] == "tool_use":
+                args = json.dumps(block["input"], ensure_ascii=False)
+                parts.append(f"[tool_use: {block['name']}({args})]")
+            elif block["type"] == "thinking":
+                parts.append(f"[thinking: {block['thinking'][:500]}...]")
+            elif block["type"] == "reasoning":
+                parts.append(f"[reasoning: {block['reasoning'][:500]}...]")
+        return "\n".join(parts) if parts else result.text
 
     def _tools_to_openai(self, tools: list[dict]) -> list[dict]:
         return [
@@ -386,12 +443,14 @@ class AnthropicLLM(LLMBackend):
         self._thinking_budget = thinking_budget
         self._max_tokens = max_tokens
 
-    def complete(self, prompt: str, system_prompt: str | None = None) -> str:
-        text, _ = self.complete_with_usage(prompt, system_prompt=system_prompt)
+    def complete(
+        self, prompt: str, system_prompt: str | None = None, label: str = "",
+    ) -> str:
+        text, _ = self.complete_with_usage(prompt, system_prompt=system_prompt, label=label)
         return text
 
     def complete_with_usage(
-        self, prompt: str, system_prompt: str | None = None
+        self, prompt: str, system_prompt: str | None = None, label: str = "",
     ) -> tuple[str, dict]:
         kwargs = self._build_kwargs(prompt, system_prompt)
         resp = self._client.messages.create(**kwargs)
@@ -410,6 +469,17 @@ class AnthropicLLM(LLMBackend):
                 "input_tokens": resp.usage.input_tokens,
                 "output_tokens": resp.usage.output_tokens,
             }
+
+        # Trace recording
+        from src.harness.trace import get_current_trace
+        trace = get_current_trace()
+        if trace:
+            trace.record_llm_call(
+                messages=[{"role": "user", "content": prompt}],
+                response=text,
+                model=self._model,
+                label=label,
+            )
 
         return text, usage
 
@@ -454,7 +524,7 @@ class AnthropicLLM(LLMBackend):
 
     # ── Tool calling ─────────────────────────────────────────────────
 
-    def call_with_tools(self, messages, system_prompt, tools, max_tokens=None):
+    def call_with_tools(self, messages, system_prompt, tools, max_tokens=None, label=""):
         effective_max = max_tokens if max_tokens is not None else self._max_tokens
         api_messages = self._messages_to_anthropic(messages)
 
@@ -477,7 +547,20 @@ class AnthropicLLM(LLMBackend):
                 }
 
         resp = self._client.messages.create(**kwargs)
-        return self._parse_anthropic_response(resp)
+        result = self._parse_anthropic_response(resp)
+
+        # Trace recording
+        from src.harness.trace import get_current_trace
+        trace = get_current_trace()
+        if trace:
+            trace.record_llm_call(
+                messages=messages,
+                response=OpenAICompatibleLLM._serialize_llm_response(result),
+                model=self._model,
+                label=label,
+            )
+
+        return result
 
     def _messages_to_anthropic(self, messages: list[dict]) -> list[dict]:
         result = []
@@ -555,7 +638,9 @@ class GeminiLLM(LLMBackend):
         self._max_tokens = max_tokens
         self._call_counter = 0
 
-    def complete(self, prompt: str, system_prompt: str | None = None) -> str:
+    def complete(
+        self, prompt: str, system_prompt: str | None = None, label: str = "",
+    ) -> str:
         from google.genai import types
         config = types.GenerateContentConfig(
             temperature=self._temperature,
@@ -566,7 +651,20 @@ class GeminiLLM(LLMBackend):
             contents=prompt,
             config=config,
         )
-        return resp.text or ""
+        text = resp.text or ""
+
+        # Trace recording
+        from src.harness.trace import get_current_trace
+        trace = get_current_trace()
+        if trace:
+            trace.record_llm_call(
+                messages=[{"role": "user", "content": prompt}],
+                response=text,
+                model=self._model,
+                label=label,
+            )
+
+        return text
 
     def stream(self, prompt: str, system_prompt: str | None = None) -> Iterator[str]:
         from google.genai import types
@@ -587,7 +685,7 @@ class GeminiLLM(LLMBackend):
 
     # ── Tool calling ─────────────────────────────────────────────────
 
-    def call_with_tools(self, messages, system_prompt, tools, max_tokens=None):
+    def call_with_tools(self, messages, system_prompt, tools, max_tokens=None, label=""):
         from google.genai import types
 
         effective_max = max_tokens if max_tokens is not None else self._max_tokens
@@ -607,7 +705,20 @@ class GeminiLLM(LLMBackend):
             contents=contents,
             config=config,
         )
-        return self._parse_gemini_response(resp)
+        result = self._parse_gemini_response(resp)
+
+        # Trace recording
+        from src.harness.trace import get_current_trace
+        trace = get_current_trace()
+        if trace:
+            trace.record_llm_call(
+                messages=messages,
+                response=OpenAICompatibleLLM._serialize_llm_response(result),
+                model=self._model,
+                label=label,
+            )
+
+        return result
 
     def _tools_to_gemini(self, tools: list[dict]):
         from google.genai import types

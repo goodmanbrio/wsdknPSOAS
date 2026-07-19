@@ -21,9 +21,13 @@ from pathlib import Path
 
 import yaml
 
-_project_root = Path(__file__).resolve().parent
+_project_root = Path(__file__).resolve().parent.parent  # eval → PMS1 root
+_psoas_root = _project_root.parent.parent.parent  # PMS1 → scripts → src → PSOAS
+
+if str(_psoas_root) not in sys.path:
+    sys.path.insert(0, str(_psoas_root))
 if str(_project_root) not in sys.path:
-    sys.path.insert(0, str(_project_root))
+    sys.path.insert(1, str(_project_root))
 
 try:
     from dotenv import load_dotenv

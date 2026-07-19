@@ -41,7 +41,7 @@ LLM-orchestrated tools with CLI user interaction at any depth.
 
 | # | Spec | What it covers | Status |
 |---|---|---|---|
-| 13 | `13_ModelAgnosticToolportEtCentralize.md` | Extend LLMBackend with call_with_tools(), normalize tool I/O across Anthropic/OpenAI/Gemini, centralize agent_loop + PTECA through llm.py factory | TODO |
+| 13 | `13_ModelAgnosticToolportEtCentralize.md` | Extend LLMBackend with call_with_tools(), normalize tool I/O across Anthropic/OpenAI/Gemini, centralize agent_loop + PTECA through llm.py factory | DONE |
 
 ### Layer 2: Tool contracts (one per tool)
 
@@ -68,6 +68,13 @@ toolified.
 | `write_session_md` | Write markdown to session dir with `{{embed:$var_N}}` marker resolution | DONE |
 | `read_session_md` | Read file from session dir | DONE |
 | `inspect_var` | Registry inspection (specced in `03_opaque_registry.md`) | DONE |
+
+### Layer 4: Observability + Iteration
+
+| # | Spec | What it covers | Status |
+|---|---|---|---|
+| 15 | `15_DebugDaPipelineEtQOL.md` | Always-on debug trace: thread-local TraceBuffer captures all LLM calls + retrieval results, writes per-component per-batch markdown to tests/debug/{session_ts}/ | TODO |
+| 16 | `16_SyspromptKaisen.md` | Externalize all system prompts to sysprompts/{role}/{profile}.md, template var resolution, hard crash on missing file/unresolved vars | TODO |
 
 ### Build order rationale
 

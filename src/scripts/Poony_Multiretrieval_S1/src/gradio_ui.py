@@ -25,8 +25,12 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 _project_root = Path(__file__).resolve().parent.parent
+_psoas_root = _project_root.parent.parent.parent  # PMS1 → scripts → src → PSOAS
+
+if str(_psoas_root) not in sys.path:
+    sys.path.insert(0, str(_psoas_root))
 if str(_project_root) not in sys.path:
-    sys.path.insert(0, str(_project_root))
+    sys.path.insert(1, str(_project_root))
 
 from src.config import Config
 from src.sekei import (
@@ -398,20 +402,22 @@ def _stream_s1(query, sector, firm, index, config):
                         jo = st["judge_future"].result()
                         st["judge_output"] = jo
                         st["phase"] = "judged"
-                        bv = pto_judge_to_stencil(
+                        sr = pto_judge_to_stencil(
                             jo, st["cell_map"], st["result"],
                         )
-                        for cid, pcr in bv.items():
+                        for cid, pcr in sr.values.items():
                             all_values[cid] = CellResult(
                                 value=pcr.value, source=pcr.source,
                                 denomination=pcr.denomination,
                                 unit=pcr.unit,
                             )
                         _try_eval_compute(plan, all_values)
-                    except ValueError as exc:
-                        st["phase"] = "judged"
-                        st["judge_output"] = {}
-                        st["error"] = str(exc)
+                        if sr.failures:
+                            failed = ", ".join(
+                                f"{m} ({cid})"
+                                for cid, m in sr.failures
+                            )
+                            st["error"] = f"Failed cells: {failed}"
                     except Exception as exc:
                         st["phase"] = "error"
                         st["error"] = str(exc)

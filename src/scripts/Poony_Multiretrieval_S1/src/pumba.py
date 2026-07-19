@@ -22,7 +22,9 @@ from pathlib import Path
 from llama_index.core import VectorStoreIndex
 
 from src.config import Config
+from src.harness.sysprompts import load_sysprompt
 from src.harness.terminal_router import register, ToolChannel
+from src.harness.trace import get_current_trace, with_trace
 from src.pto import PTOBatchRequest
 
 # ── Constants ────────────────────────────────────────────────────────────
@@ -103,78 +105,6 @@ DAILO_TOOLS = [
     },
 ]
 
-# ── System prompts ───────────────────────────────────────────────────────
-
-DAILO_SYSTEM_TEMPLATE = """\
-You are Dailo -- a retrieval coordinator. You navigate a financial \
-data directory to find table chunks that contain specific metrics.
-
-## Context
-
-You are searching for: %(metrics)s
-Firm: %(firm)s
-Period: %(period)s
-Statement: %(statement)s
-
-PTO (the standard retriever) already failed on this batch -- \
-you are the fallback.
-
-## Data directory structure
-
-data/
-  <Sector>/
-    <FIRM>/
-      <FIRM>_<YEAR>_<DOCTYPE>.md
-      <UNSTRUCTURED_FILENAME>.md
-      ...
-
-Use list_dir('') to discover available sectors. Do not assume \
-directory names -- they may change as new companies are added. \
-Filenames may also be inconsistent, which is where your inference is needed.
-
-## Your tools
-
-- list_dir(path): see what's in a directory
-- spawn_gulei(files): send up to 6 files to workers who will search \
-  for the right table chunks. Returns full chunk text for hits, \
-  null for misses, plus a list of already-surveyed files.
-- report_results(node_ids, exhausted): call this when done. \
-  Pass best node_ids (up to 3), or exhausted=true if nothing found.
-
-## Strategy
-
-1. Use list_dir to find the firm's directory
-2. Pick up to 6 most promising files (consider period, filing type)
-3. Call spawn_gulei with those files
-4. Read the results -- chunk text is shown for hits
-5. If hits: pick the best (up to 3) node_ids. \
-   Call report_results with those node_ids.
-6. If all null: pick next batch of files (avoid already-surveyed)
-7. Repeat until you find chunks or exhaust all files
-8. If all files exhausted: call report_results with exhausted=true
-
-## Rules
-
-- The spawn_gulei result lists already-surveyed files at the bottom. \
-  NEVER re-pick files listed there.
-- Pick at most 6 files per spawn_gulei call
-- You MUST call report_results to finish. Do not end without it.
-- report_results node_ids: at most 3, ranked best first"""
-
-LENG_SYSTEM = """\
-You are a financial data screener. Given a table chunk from a \
-filing, determine if it contains ALL requested metrics. Extract \
-values if found. Output JSON only, no explanation."""
-
-GULEI_PAI_SYSTEM = """\
-You are a chunk selector. Given a list of table chunk summaries \
-from a financial filing, pick the ones most likely to contain \
-specific metrics. Output JSON only, no explanation."""
-
-GULEI_SAU_SYSTEM = """\
-You are a chunk reviewer. Given multiple table chunks that workers \
-flagged as relevant, pick the single best one for the requested \
-metrics. Output JSON only, no explanation."""
 
 # ── JSON parsing helper ──────────────────────────────────────────────────
 
@@ -353,10 +283,11 @@ def _run_leng(
     section: str,
     request: PTOBatchRequest,
     leng_llm,
+    system_prompt: str = "",
 ) -> dict:
     """Screen one chunk. Returns {found, node_id, metrics | None}."""
     prompt = _build_leng_prompt(file_name, section, chunk_text, request)
-    raw = leng_llm.complete(prompt, system_prompt=LENG_SYSTEM)
+    raw = leng_llm.complete(prompt, system_prompt=system_prompt, label="leng")
     parsed = _parse_json_with_fences(raw)
 
     if parsed is None:
@@ -373,10 +304,11 @@ def _run_gulei_pai(
     table_chunks: list[tuple[str, str, str]],
     request: PTOBatchRequest,
     gulei_llm,
+    system_prompt: str = "",
 ) -> list[int]:
     """Pick top-k chunk indices. Returns list of valid indices, or []."""
     prompt = _build_gulei_pai_prompt(table_chunks, request)
-    raw = gulei_llm.complete(prompt, system_prompt=GULEI_PAI_SYSTEM)
+    raw = gulei_llm.complete(prompt, system_prompt=system_prompt, label="gulei_pai")
     parsed = _parse_json_with_fences(raw)
     if parsed is None:
         return []
@@ -397,6 +329,7 @@ def _run_gulei_sau(
     request: PTOBatchRequest,
     index: VectorStoreIndex,
     gulei_llm,
+    system_prompt: str = "",
 ) -> str:
     """Pick best chunk from multiple Leng hits. Returns node_id."""
     candidates = []
@@ -411,7 +344,7 @@ def _run_gulei_sau(
         return hits[0]["node_id"]
 
     prompt = _build_gulei_sau_prompt(candidates, request)
-    raw = gulei_llm.complete(prompt, system_prompt=GULEI_SAU_SYSTEM)
+    raw = gulei_llm.complete(prompt, system_prompt=system_prompt, label="gulei_sau")
     parsed = _parse_json_with_fences(raw)
 
     if parsed is None:
@@ -439,6 +372,9 @@ def _run_single_gulei(
     gulei_llm,
     leng_llm,
     ch: ToolChannel,
+    gulei_pai_sys: str = "",
+    gulei_sau_sys: str = "",
+    leng_sys: str = "",
 ) -> str | None:
     """Survey one file for relevant table chunks.
     Returns node_id of best chunk, or None.
@@ -453,7 +389,7 @@ def _run_single_gulei(
     # Step 1: GuleiPai picks top-k chunks
     k = min(12, len(table_chunks))
     ch.print(f"  Gulei {file_name}: GuleiPai picking {k}...")
-    picks = _run_gulei_pai(table_chunks, request, gulei_llm)
+    picks = _run_gulei_pai(table_chunks, request, gulei_llm, system_prompt=gulei_pai_sys)
     if not picks:
         ch.print(
             f"  Gulei {file_name}: NOT FOUND (GuleiPai returned nothing)"
@@ -474,11 +410,14 @@ def _run_single_gulei(
     n_lengs = len(picked_chunks)
     ch.print(f"  Gulei {file_name}: {n_lengs} Lengs...")
 
+    parent_trace = get_current_trace()
+
     with ThreadPoolExecutor(max_workers=12) as pool:
         futures = [
             pool.submit(
-                _run_leng, nid, text, file_name, section,
-                request, leng_llm,
+                with_trace(parent_trace, _run_leng),
+                nid, text, file_name, section,
+                request, leng_llm, leng_sys,
             )
             for nid, text, section in picked_chunks
         ]
@@ -508,7 +447,7 @@ def _run_single_gulei(
     ch.print(
         f"  Gulei {file_name}: GuleiSau picking best of {len(hits)} hits"
     )
-    best_nid = _run_gulei_sau(hits, request, index, gulei_llm)
+    best_nid = _run_gulei_sau(hits, request, index, gulei_llm, system_prompt=gulei_sau_sys)
     ch.print(f"  Gulei {file_name}: FOUND {best_nid[:12]}...")
     return best_nid
 
@@ -524,6 +463,9 @@ def _run_guleis_parallel(
     gulei_llm,
     leng_llm,
     ch: ToolChannel,
+    gulei_pai_sys: str = "",
+    gulei_sau_sys: str = "",
+    leng_sys: str = "",
 ) -> list[str | None]:
     """Run one Gulei per file in parallel. Returns list parallel to files:
     node_id (str) if Gulei found a chunk, None if not.
@@ -533,14 +475,22 @@ def _run_guleis_parallel(
             return _run_single_gulei(
                 fname, request, index, file_table_index,
                 gulei_llm, leng_llm, ch,
+                gulei_pai_sys=gulei_pai_sys,
+                gulei_sau_sys=gulei_sau_sys,
+                leng_sys=leng_sys,
             )
         except Exception:
             ch.print(f"  Gulei {fname}: CRASHED (exception), skipping")
             return None
 
+    parent_trace = get_current_trace()
+
     ch.print(f"Spawning {len(files)} Gulei workers...")
     with ThreadPoolExecutor(max_workers=6) as pool:
-        futures = [pool.submit(_safe_gulei, f) for f in files]
+        futures = [
+            pool.submit(with_trace(parent_trace, _safe_gulei), f)
+            for f in files
+        ]
         return [f.result() for f in futures]
 
 
@@ -587,13 +537,18 @@ def run_pumba(
             (node_id, section, preview)
         )
 
-    # ── Build Dailo system prompt (templated ONCE) ──
-    dailo_system_prompt = DAILO_SYSTEM_TEMPLATE % {
-        "firm": request.firm,
-        "period": request.period,
-        "metrics": ", ".join(request.metrics),
-        "statement": request.statement,
-    }
+    # ── Load system prompts (once per run_pumba invocation) ──
+    gulei_pai_sys = load_sysprompt("pumba_gulei_pai", config.pumba_gulei_profile)
+    gulei_sau_sys = load_sysprompt("pumba_gulei_sau", config.pumba_gulei_profile)
+    leng_sys = load_sysprompt("pumba_leng", config.pumba_leng_profile)
+
+    dailo_system_prompt = load_sysprompt(
+        "pumba_dailo", config.pumba_dailo_profile,
+        firm=request.firm,
+        period=request.period,
+        metrics=", ".join(request.metrics),
+        statement=request.statement,
+    )
 
     # ── Agent loop ──
     messages = [{
@@ -609,6 +564,7 @@ def run_pumba(
             messages=messages,
             system_prompt=dailo_system_prompt,
             tools=DAILO_TOOLS,
+            label="dailo",
         )
 
         # ── end_turn without report_results (error) ──
@@ -691,6 +647,9 @@ def run_pumba(
                         results = _run_guleis_parallel(
                             valid_files, request, index,
                             file_table_index, gulei_llm, leng_llm, ch,
+                            gulei_pai_sys=gulei_pai_sys,
+                            gulei_sau_sys=gulei_sau_sys,
+                            leng_sys=leng_sys,
                         )
                         blacklist.update(valid_files)
                         blacklist.update(invalid_files)
@@ -748,12 +707,16 @@ def run_pumba(
                 ch.print(
                     f"PUMBA exhausted all files for {request.firm}"
                 )
-                answer = ch.input(
+                question = (
                     "PUMBA failed to find the data. Options:\n"
                     "  'skip' - skip this batch\n"
                     "  'exit' - abort the entire PMS1 run\n"
                     "Your choice:"
                 )
+                answer = ch.input(question)
+                _t = get_current_trace()
+                if _t:
+                    _t.record_user_interaction(question, answer)
                 if answer.strip().lower() == "exit":
                     raise ValueError(
                         f"User aborted after PUMBA exhausted "
@@ -769,9 +732,11 @@ def run_pumba(
 
     # Exceeded max turns
     ch.print(f"PUMBA Dailo exceeded {MAX_DAILO_TURNS} turns")
-    answer = ch.input(
-        "Dailo ran out of turns. 'skip' or 'exit':"
-    )
+    question = "Dailo ran out of turns. 'skip' or 'exit':"
+    answer = ch.input(question)
+    _t = get_current_trace()
+    if _t:
+        _t.record_user_interaction(question, answer)
     if answer.strip().lower() == "exit":
         raise ValueError(
             f"User aborted after Dailo exceeded "

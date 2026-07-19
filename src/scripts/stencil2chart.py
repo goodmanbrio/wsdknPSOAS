@@ -23,6 +23,7 @@ Usage:
 
 from __future__ import annotations
 
+import math
 import re
 import threading
 from pathlib import Path
@@ -57,7 +58,7 @@ def _check_gaps(chart_input: dict) -> list[str]:
     for s in chart_input.get("series", []):
         periods = chart_input.get("periods", [])
         for i, v in enumerate(s.get("values", [])):
-            if v is None:
+            if v is None or (isinstance(v, float) and math.isnan(v)):
                 period = periods[i] if i < len(periods) else f"index {i}"
                 gaps.append(f"{s['metric']} @ {period}")
     return gaps

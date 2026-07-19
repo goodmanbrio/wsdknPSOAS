@@ -22,8 +22,12 @@ from pathlib import Path
 import yaml
 
 _project_root = Path(__file__).resolve().parent.parent
+_psoas_root = _project_root.parent.parent.parent  # PMS1 → scripts → src → PSOAS
+
+if str(_psoas_root) not in sys.path:
+    sys.path.insert(0, str(_psoas_root))
 if str(_project_root) not in sys.path:
-    sys.path.insert(0, str(_project_root))
+    sys.path.insert(1, str(_project_root))
 
 from src.config import Config
 from src.sekei import sekei, format_plan, validate_plan

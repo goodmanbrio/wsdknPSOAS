@@ -16,7 +16,10 @@ import threading
 
 from llama_index.core import VectorStoreIndex
 
+from pathlib import Path
+
 from src.harness.terminal_router import register, ToolChannel, override_channel, clear_override
+from src.harness.trace import TraceBuffer, set_current_trace, get_current_trace, clear_current_trace
 from src.config import Config
 from src.sekei import sekei
 from src.orchestrator import run
@@ -29,6 +32,8 @@ def run_pms1_pipeline(
     firm: str,
     query: str,
     channel: ToolChannel | None = None,
+    debug_dir: Path | None = None,
+    config: Config | None = None,
 ) -> dict:
     """Run full PMS1 pipeline for one firm. Returns stencil dict."""
     ch = channel or _default_channel
@@ -39,20 +44,32 @@ def run_pms1_pipeline(
     try:
         # ── Load deps ─────────────────────────────────────────
         ch.print("Loading index...")
-        config = Config.from_env()
+        config = config or Config.from_env()
         index = _load_index(config)
 
-        # ── Sekei ─────────────────────────────────────────────
+        # ── Sekei (traced) ────────────────────────────────────
         ch.print("Sekei planning...")
         full_query = f"{firm}: {query}"
-        plan = sekei(full_query, config)
+
+        trace = TraceBuffer("Sekei", firm=firm)
+        set_current_trace(trace)
+        try:
+            plan = sekei(full_query, config)
+        finally:
+            if debug_dir:
+                try:
+                    trace.flush_to_disk(debug_dir)
+                except OSError:
+                    ch.print("[warn] Sekei trace flush failed")
+            clear_current_trace()
+
         n_cells = len(plan.cells)
         n_batches = len(plan.batches)
         ch.print(f"done. {n_cells} cells, {n_batches} batches.")
 
         # ── PTO + Stencil ─────────────────────────────────────
         ch.print(f"Running {n_batches} batches...")
-        results = run(plan, index, config)
+        results = run(plan, index, config, debug_dir=debug_dir)
 
         n_filled = len(results)
         ch.print(f"Stencil computed. {n_filled} cells filled.")
