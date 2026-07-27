@@ -9,31 +9,76 @@ Usage:
 """
 
 TOOL_DEFINITIONS = [
-    # 06_tool_pms1
+    # PMS2
     {
-        "name": "run_pms1",
+        "name": "run_pms2",
         "description": (
-            "Run the PMS1 pipeline to extract financial data for a "
-            "single firm. Returns a stencil as an opaque handle."
+            "Extract financial data for one or more firms into stencils. "
+            "Handles stencil creation, user confirmation, file discovery, "
+            "batch planning, parallel extraction via chunk-level Leng "
+            "workers, and validation. Returns stencil(s) as opaque handles."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "firm": {
-                    "type": "string",
-                    "description": "Company name. e.g. 'Best Buy', 'Amcor'",
+                "firms": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Firm names/tickers. e.g. ['LITE', 'Innolight']"
+                    ),
                 },
                 "query": {
                     "type": "string",
                     "description": (
-                        "The user's original query or the relevant "
-                        "portion for this firm."
+                        "What to extract. e.g. "
+                        "'Revenue, Laser Rev, OpProfit, EPS, MktCap, P/Rev, P/E'"
+                    ),
+                },
+                "periods": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Fiscal periods. e.g. ['FY2025', 'FY2026', 'FY2027']"
+                    ),
+                },
+                "granularity": {
+                    "type": "string",
+                    "enum": ["annual", "quarterly", "half"],
+                    "description": (
+                        "Period granularity. annual=full FY, "
+                        "quarterly=per quarter, half=per half."
                     ),
                 },
             },
-            "required": ["firm", "query"],
+            "required": ["firms", "query", "periods", "granularity"],
         },
     },
+    # 06_tool_pms1 — COMMENTED OUT: PMS2 replaces PMS1. Code stays in tree.
+    # {
+    #     "name": "run_pms1",
+    #     "description": (
+    #         "Run the PMS1 pipeline to extract financial data for a "
+    #         "single firm. Returns a stencil as an opaque handle."
+    #     ),
+    #     "input_schema": {
+    #         "type": "object",
+    #         "properties": {
+    #             "firm": {
+    #                 "type": "string",
+    #                 "description": "Company name. e.g. 'Best Buy', 'Amcor'",
+    #             },
+    #             "query": {
+    #                 "type": "string",
+    #                 "description": (
+    #                     "The user's original query or the relevant "
+    #                     "portion for this firm."
+    #                 ),
+    #             },
+    #         },
+    #         "required": ["firm", "query"],
+    #     },
+    # },
     # 07_tool_pteca
     {
         "name": "run_pteca",

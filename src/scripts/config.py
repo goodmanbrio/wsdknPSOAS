@@ -20,6 +20,9 @@ import yaml
 # PMS1 project root (where data/ lives)
 _PMS1_ROOT = Path(__file__).resolve().parent / "Poony_Multiretrieval_S1"
 
+# PSOAS project root (parent of src/)
+_PSOAS_ROOT = Path(__file__).resolve().parent.parent.parent
+
 
 @dataclass
 class Config:
@@ -63,6 +66,21 @@ class Config:
     pumba_dailo_profile: str = "deepseek_v4pro_highalloc_temp0"  # Dailo: V4 Pro, deterministic extraction
     pumba_gulei_profile: str = "deepseek_v4pro_med"              # Gulei: V4 Pro, chunk selection
     pumba_leng_profile: str = "deepseek_v4flash_leng"            # Leng screening: V4 Flash, cheapest pass
+
+    # ── PMS2 LLM role → profile mapping ──────────────────────────────
+    # ── PMS2 data paths ──────────────────────────────────────────────
+    pms2_raw_dir: Path = field(default_factory=lambda: _PSOAS_ROOT / "data" / "files_raw")
+    pms2_data_dir: Path = field(default_factory=lambda: _PSOAS_ROOT / "data" / "files_ingested")
+    pms2_index_dir: Path = field(default_factory=lambda: _PSOAS_ROOT / "data" / "index")
+
+    pms2_sekei_profile: str = "anthropic_opushighthink"       # Opus 4.6 + 10k thinking: metric decomposition + stencil JSON
+    pms2_mapper_profile: str = "anthropic_hayasui"            # Haiku 4.5: dir nav, low stakes
+    pms2_fiscal_cal_profile: str = "anthropic_hayasui"        # Haiku: FY end lookup via web_search
+    pms2_batch_planner_profile: str = "anthropic_sonnetmedthink"  # Sonnet 4.6 + 5k thinking: file routing reasoning
+    pms2_leng_profile: str = "anthropic_hayasui"              # Haiku: cheap extraction
+    pms2_validator_profile: str = "anthropic_hayasui"          # Haiku: cheap verification
+    pms2_leng_max_workers: int = 100                           # concurrent Leng structured_complete calls per firm
+    pms2_validator_max_workers: int = 50                       # concurrent Validator agent loops per firm
 
     # ── Chart output ──────────────────────────────────────────────────
     output_dir: Path = field(default_factory=lambda: _PMS1_ROOT / "output")

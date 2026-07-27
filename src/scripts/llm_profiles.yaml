@@ -32,26 +32,26 @@ anthropic_sonnetmedthink:
 
 anthropic_opuslow:
   provider: anthropic
-  model: claude-opus-4-8
+  model: claude-opus-4-6
   thinking: false
   max_tokens: 3000
 
 anthropic_opusmed:
   provider: anthropic
-  model: claude-opus-4-8
+  model: claude-opus-4-6
   thinking: false
   max_tokens: 3000
 
 anthropic_opusmedthink:
   provider: anthropic
-  model: claude-opus-4-8
+  model: claude-opus-4-6
   thinking: true
   thinking_budget: 5000   # ceiling, model uses up to. 5k enough for judge/generation reasoning
   max_tokens: 8000        # = 5k thinking + 3k answer. thinking tokens bill as output ($25/MTok)
 
 anthropic_opushighthink:
   provider: anthropic
-  model: claude-opus-4-8
+  model: claude-opus-4-6
   thinking: true
   thinking_budget: 10000  # generous — Sekei needs to reason about metric decomposition + batching
   max_tokens: 14000       # = 10k thinking + 4k answer (stencil JSON can be large)

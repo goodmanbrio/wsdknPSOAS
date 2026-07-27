@@ -244,6 +244,41 @@ def _exec_read_session_md(params: dict) -> str:
     return target.read_text()
 
 
+def _exec_pms2(params: dict) -> str:
+    from src.scripts.PMS2.pms2 import run_pms2_pipeline
+
+    if _session_dir is None:
+        return "Error: no active session (run_pms2 called outside harness)."
+
+    firms = params["firms"]
+    query = params["query"]
+    periods = params["periods"]
+    granularity = params["granularity"]
+    channel = register("PMS2")
+
+    display_stencils = run_pms2_pipeline(
+        firms=firms, query=query, periods=periods,
+        granularity=granularity,
+        session_dir=_session_dir,
+        channel=channel, config=_config, debug_dir=_debug_dir,
+    )
+
+    handles = []
+    for stencil in display_stencils:
+        firm = stencil["firm"]
+        handle = registry.store(stencil, f"{firm} stencil")
+        _dump_asset(
+            f"{handle.lstrip('$')}_{_sanitize(firm)}_stencil.json",
+            stencil,
+        )
+        handles.append((firm, handle))
+
+    return (
+        f"PMS2 complete. {len(handles)} firms extracted. "
+        f"Handles: {', '.join(f'{f}={h}' for f, h in handles)}."
+    )
+
+
 def _exec_inspect_var(params: dict) -> str:
     mode = params["mode"]
     if mode == "list":
@@ -268,7 +303,8 @@ def _exec_inspect_var(params: dict) -> str:
 # ── Dispatch table ────────────────────────────────────────────────────
 
 _dispatch: dict[str, Callable] = {
-    "run_pms1":          _exec_pms1,
+    # "run_pms1":          _exec_pms1,  # PMS2 replaces PMS1. Code stays in tree.
+    "run_pms2":          _exec_pms2,
     "run_pteca":         _exec_pteca,
     "run_stencil2chart": _exec_stencil2chart,
     "ask_user":          _exec_ask_user,

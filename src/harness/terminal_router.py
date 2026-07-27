@@ -42,6 +42,7 @@ LABEL_STYLES = {
     "PTECA":        "bold yellow",
     "S2C":          "bold magenta",
     "PUMBA":        "bold red",
+    "PMS2":         "bold blue",
 }
 
 

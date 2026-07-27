@@ -12,7 +12,7 @@ failures without re-running.
 
 | Event type | Where it occurs | What's recorded |
 |---|---|---|
-| LLM call | sekei, pto_judge, pto_hyde, pumba dailo/gulei/leng, pteca | Full messages array, raw response (incl. thinking blocks), model name |
+| LLM call | sekei, pto_judge, pto_hyde, pumba dailo/gulei/leng, pteca | Full messages array, raw response text, model name. Note: `complete_with_usage()` records text blocks only; thinking blocks are captured only via `call_with_tools()` path (which uses `_serialize_llm_response`) |
 | Retrieval | pto_retrieve | Top chunks (full text, scores, metadata), runner-ups, method_log |
 | User interaction | ask_user, pteca_ask_user, PUMBA exhaustion | Question asked, answer received |
 
@@ -99,10 +99,10 @@ PUMBA batch thread  ← trace set here
                     │           ├── chunk0 thread  ← NO trace without propagation
 ```
 
-Resolution: helper that propagates parent trace to child thread:
+Resolution: public helper that propagates parent trace to child thread:
 
 ```python
-def _with_trace(parent_trace, fn):
+def with_trace(parent_trace, fn):
     """Wrap fn so child thread inherits parent's TraceBuffer."""
     def wrapper(*args, **kwargs):
         set_current_trace(parent_trace)
@@ -114,7 +114,7 @@ def _with_trace(parent_trace, fn):
 
 # Usage in pumba.py:
 parent_trace = get_current_trace()
-futures = [pool.submit(_with_trace(parent_trace, gulei_worker), file)
+futures = [pool.submit(with_trace(parent_trace, gulei_worker), file)
            for file in files]
 ```
 
@@ -297,7 +297,7 @@ duplication. The debug file captures what varies between runs.
 [full message content]
 
 ### Response
-[full raw response text including thinking blocks if present]
+[full raw response text; thinking blocks included only for call_with_tools() path]
 ```
 
 PUMBA files follow the same format but contain many more LLM calls
@@ -448,10 +448,10 @@ the codebase are auto-captured as long as a trace context is active,
 even without an explicit label. Labels are cosmetic (for the
 markdown headings), not structural.
 
-### Retrieval recording (1 modification in pto.py)
+### Retrieval recording (1 modification in orchestrator.py)
 
 ```python
-# After pto_retrieve() returns PTOBatchResult:
+# In orchestrator.py _run_pto_batch(), after pto_retrieve() returns PTOBatchResult:
 trace = get_current_trace()
 if trace:
     trace.record_retrieval(batch_result)
@@ -462,12 +462,12 @@ if trace:
 ```python
 # Before Gulei ThreadPoolExecutor submit:
 parent_trace = get_current_trace()
-futures = [pool.submit(_with_trace(parent_trace, _run_gulei), ...)
+futures = [pool.submit(with_trace(parent_trace, _run_gulei), ...)
            for file in files]
 
 # Before Leng ThreadPoolExecutor submit (inside _run_gulei):
 parent_trace = get_current_trace()
-futures = [pool.submit(_with_trace(parent_trace, _run_leng), ...)
+futures = [pool.submit(with_trace(parent_trace, _run_leng), ...)
            for chunk in chunks]
 ```
 
@@ -499,8 +499,8 @@ finally:
 | Component | Role | Changes |
 |---|---|---|
 | `llm.py` | Universal LLM chokepoint | Refactor OpenAI backend: `complete_with_usage()` becomes canonical (hits API, extracts usage), `complete()` delegates to it. Add `label` param + trace recording in `complete_with_usage()` and `call_with_tools()` only |
-| `pto.py` | Retrieval recording | Add 3-line trace recording after `pto_retrieve()` |
-| `pumba.py` | Thread propagation | Wrap Gulei/Leng submits with `_with_trace()` |
+| `pto.py` | Label threading | Add `label=` to LLM calls (hyde, judge) |
+| `pumba.py` | Thread propagation | Wrap Gulei/Leng submits with `with_trace()` |
 | `tool_pms1.py` | Sekei trace set-point | Add set/flush/clear around `sekei()` call |
 | `orchestrator.py` | PTO + PUMBA trace set-points | Add set/flush/clear inside batch runners |
 | `tool_pteca.py` | PTECA trace set-point | Add set/flush/clear around agent loop |
@@ -515,7 +515,7 @@ NEW:
   src/harness/trace.py
       - TraceBuffer dataclass
       - set_current_trace / get_current_trace / clear_current_trace
-      - _with_trace helper for child thread propagation
+      - with_trace() helper for child thread propagation (public, not underscore-prefixed)
 
 MODIFIED:
   src/scripts/llm.py
@@ -529,14 +529,13 @@ MODIFIED:
       - OpenAI callers now get real token usage data (previously got empty {})
 
   src/scripts/Poony_Multiretrieval_S1/src/pto.py
-      - Add trace.record_retrieval() after pto_retrieve()
       - Add label="pto_hyde" to HyDE LLM call
       - Add label="pto_judge" to judge LLM call
 
   src/scripts/Poony_Multiretrieval_S1/src/pumba.py
-      - Import _with_trace from trace.py
-      - Wrap Gulei ThreadPoolExecutor submits with _with_trace
-      - Wrap Leng ThreadPoolExecutor submits with _with_trace
+      - Import with_trace from trace.py
+      - Wrap Gulei ThreadPoolExecutor submits with with_trace
+      - Wrap Leng ThreadPoolExecutor submits with with_trace
       - Add label="dailo"/"gulei_pai"/"gulei_sau"/"leng" to LLM calls
 
   src/tools/tool_pms1.py
@@ -548,6 +547,7 @@ MODIFIED:
       - Import TraceBuffer, set/get/clear from trace.py
       - Add debug_dir param to run()
       - Add PTO trace set-point inside _run_pto_batch
+      - Add trace.record_retrieval() after pto_retrieve() in _run_pto_batch
       - Add PUMBA trace set-point inside _run_pumba_batch
 
   src/tools/tool_pteca.py
@@ -630,7 +630,7 @@ a label, but not a failure.
 5. **Thread-local vs. explicit trace param:** Thread-local. Matches
    existing `override_channel` pattern. Auto-captures future LLM
    calls without modifying their signatures. Trade-off: child
-   threads need explicit propagation via `_with_trace`, but this
+   threads need explicit propagation via `with_trace`, but this
    only applies to PUMBA's nested pools (2 locations).
 
 6. **debug_dir path:** `tests/debug/{session_ts}/` using the same
@@ -640,3 +640,142 @@ a label, but not a failure.
    chart_input, compute_stencil output — all derived from LLM
    responses via deterministic parsing. Not captured. If the LLM
    response is in the trace, the parsed output is reproducible.
+
+## Implementation design decisions
+
+### Ambiguity 1: OpenAI `complete_with_usage()` refactoring
+
+**Forensics:** `OpenAICompatibleLLM.complete()` directly hit the API.
+`AnthropicLLM.complete()` already delegated to `complete_with_usage()`.
+Two different patterns = two trace recording points needed per backend.
+
+**Hypothesis:** Refactor OpenAI so `complete_with_usage()` is canonical
+(hits API, extracts `resp.usage`), `complete()` delegates to it.
+Single trace point per backend for all complete-style calls.
+
+**Verify:** OpenAI SDK `ChatCompletion` objects always have `.usage`
+with `prompt_tokens` and `completion_tokens`. Confirmed via SDK docs.
+DeepSeek (OpenAI-compatible) also returns these fields.
+
+**Decision:** Refactored. OpenAI callers now get real token usage data
+(previously got empty `{}`). This is a free bonus from the structural
+change.
+
+### Ambiguity 2: `label` parameter threading
+
+**Forensics:** Spec says add `label` to `complete_with_usage()` and
+`call_with_tools()`, and `complete()` passes through. But the abstract
+`LLMBackend` base class defines the signatures.
+
+**Hypothesis:** Add `label` as optional `str = ""` to all three methods
+on the ABC. Subclasses get it for free via kwargs.
+
+**Doubt:** Adding `label` to `complete()` changes the abstract method
+signature — will callers break?
+
+**Verify:** All callers use keyword args or positional `prompt` +
+`system_prompt`. `label` as keyword-only with default `""` is
+backwards-compatible. Checked every callsite:
+- `sekei.py:414` — `llm.complete_with_usage(query, system_prompt=...)`
+- `pto.py:447` — `llm.complete(user_prompt, system_prompt=...)`
+- `pto.py:845` — `llm.complete_with_usage(user_prompt, system_prompt=...)`
+- `pumba.py` — `.complete(prompt, system_prompt=...)`
+
+None pass positional args beyond the first two. Safe.
+
+**Decision:** Added `label: str = ""` to `complete()`,
+`complete_with_usage()`, and `call_with_tools()` on `LLMBackend` ABC
+and all subclasses.
+
+### Ambiguity 3: GeminiLLM trace recording
+
+**Forensics:** Spec says "both backends" for the structural refactoring
+and trace recording, referring to OpenAI + Anthropic. GeminiLLM is a
+third backend not mentioned.
+
+**Decision:** Added trace recording to GeminiLLM's `complete()` and
+`call_with_tools()`. Trivial cost, eliminates a coverage gap.
+
+### Ambiguity 4: `debug_dir` plumbing — function param vs module state
+
+**Forensics:** `execute_tool(name, params)` is called by
+`_safe_execute(tc)` in `agent_loop.py`, which is called by
+`_dispatch_parallel(tool_calls)`. Adding a param means threading
+it through the closure.
+
+**Decision:** Module-level `_debug_dir` with `set_debug_dir()`,
+called alongside `set_session_dir()` in `agent_loop.py`. This is
+what the spec means by "plumbing" — the important thing is that
+debug_dir reaches the handlers, not the specific mechanism.
+
+### Ambiguity 5: `batch_idx` extraction from batch ID
+
+**Forensics:** SekeiBatch.id is a string like `"A_12"`. TraceBuffer
+takes `batch_idx: int | None`. The spec's filename convention uses
+`batch0`, `batch1`, etc.
+
+**Decision:** Use `int(batch.id.split("_")[-1]) if "_" in batch.id
+else 0`. This gives unique filenames per batch (since row numbers
+differ between batches). Not sequential batch indices, but the
+filenames are unique and self-documenting.
+
+### Ambiguity 6: `_serialize_llm_response()` location
+
+**Forensics:** Both `AnthropicLLM` and `GeminiLLM` need to serialize
+`LLMResponse` for trace recording in their `call_with_tools()`.
+The serializer is the same logic.
+
+**Decision:** `@staticmethod` on `OpenAICompatibleLLM`. It's defined
+first in the file, both other backends reference it as
+`OpenAICompatibleLLM._serialize_llm_response(result)`. Not the
+cleanest OOP but avoids adding methods to the ABC for implementation
+concerns. Works because all three classes are in the same file.
+
+### Ambiguity 7: Exception handling overlap — `execute_tool` vs `_safe_execute`
+
+**Forensics:** `_safe_execute` in `agent_loop.py` already catches
+exceptions from `execute_tool()`. Spec adds a try/except to
+`execute_tool()` itself for trace flushing + [BUMMER].
+
+**Decision:** Both layers remain. `execute_tool` catches handler
+crashes (has trace context to flush). `_safe_execute` catches
+everything else (defense-in-depth). No behavioral conflict.
+
+### Ambiguity 8: Orchestrator-level `ask_user` trace recording
+
+**Forensics:** Spec lists "ask_user" in the user interaction capture
+table. But the orchestrator's `ask_user` runs via `execute_tool("ask_user")`
+which is dispatched by the outer agent loop — no trace context is active
+at that level.
+
+**Decision:** No trace recording added to `_exec_ask_user`. The spec's
+table lists it as a capturable event TYPE, but it only fires when a
+trace context is active. Orchestrator-level ask_user has no component
+trace.
+
+### Ambiguity 9: `_render_markdown()` — thinking block truncation
+
+**Forensics:** `_serialize_llm_response()` truncates thinking/reasoning
+blocks to 500 chars. Full thinking blocks can be 10k+ chars.
+
+**Decision:** `_serialize_llm_response()` truncates to 500 chars for
+the `response` field stored in events. This is what gets rendered in
+the markdown. Trade-off: full thinking would make PUMBA traces very
+large (many Dailo turns). 500 chars captures the gist. If full thinking
+is needed, increase the truncation limit or remove it — the
+`_render_markdown` method faithfully renders whatever is in the event.
+
+### Ambiguity 10: `flush_to_disk` failure handling
+
+**Forensics:** Spec says "Wrap flush in try/except, log warning via
+channel, and continue." But flush happens in multiple locations:
+- `tool_pms1.py` (Sekei) — has channel access
+- `orchestrator.py` (PTO/PUMBA batch threads) — no channel in scope
+- `tool_pteca.py` — has channel access
+- `execute_tool.py` (exception path) — has console access
+
+**Decision:** All flush sites wrapped in try/except OSError.
+- Sites with channel access: log `[warn]` via channel.
+- Sites without (orchestrator batch threads): silently swallow.
+  The tool execution continues regardless — the debug trace is
+  secondary to the actual pipeline result.

@@ -24,9 +24,13 @@ from pathlib import Path
 from typing import Iterator
 
 import yaml
+from dotenv import load_dotenv
 from openai import OpenAI
 
 from src.config import Config
+
+# Load .env from project root (parent of src/)
+load_dotenv(Path(__file__).resolve().parent.parent.parent / ".env")
 
 # ── Provider registry ────────────────────────────────────────────────────
 # Maps provider name → env var for API key + base_url for OpenAI-compat.
@@ -143,12 +147,27 @@ class LLMBackend(ABC):
         tools: list[dict],
         max_tokens: int | None = None,
         label: str = "",
+        web_search: bool = False,
     ) -> LLMResponse:
         """Multi-turn tool calling. Override in backends that support tools."""
         raise NotImplementedError(
             f"{type(self).__name__} does not support tool calling. "
             f"Check that the profile assigned to this role uses a provider "
             f"with tool support."
+        )
+
+    def structured_complete(
+        self,
+        prompt: str,
+        schema: dict,
+        system_prompt: str | None = None,
+        label: str = "",
+        web_search: bool = False,
+    ) -> dict:
+        """Return structured JSON matching schema. Override in backends."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support structured_complete. "
+            f"Only AnthropicLLM implements this for PMS2."
         )
 
 
@@ -423,10 +442,25 @@ class AnthropicLLM(LLMBackend):
     """Anthropic Claude backend with configurable extended thinking.
 
     When thinking=True:
-    - temperature is forced to 1 (Anthropic requirement)
-    - system prompt is folded into user message
-    - budget_tokens caps internal reasoning
+    - 4.6+ models: adaptive thinking (model decides depth via effort)
+    - 4.5 and earlier: enabled + budget_tokens (fixed ceiling)
+    - temperature forced to 1 (Anthropic requirement)
+    - system prompt folded into user message
     """
+
+    @staticmethod
+    def _supports_adaptive(model: str) -> bool:
+        """True if model supports adaptive thinking (4.6+).
+
+        4.5 and earlier only support type=enabled + budget_tokens.
+        4.6+ support adaptive (and deprecate enabled).
+        4.7+ require adaptive (enabled returns 400).
+        """
+        import re
+        m = re.search(r"claude-\w+-(\d+)-(\d+)", model)
+        if not m:
+            return False
+        return (int(m.group(1)), int(m.group(2))) >= (4, 6)
 
     def __init__(
         self,
@@ -501,8 +535,7 @@ class AnthropicLLM(LLMBackend):
                 "max_tokens": self._max_tokens,
                 "messages": [{"role": "user", "content": user_text}],
             }
-            # opus-4-8 uses adaptive thinking; older models use enabled
-            if "opus-4-8" in self._model:
+            if self._supports_adaptive(self._model):
                 kwargs["thinking"] = {"type": "adaptive"}
                 kwargs["output_config"] = {"effort": "high"}
             else:
@@ -524,23 +557,31 @@ class AnthropicLLM(LLMBackend):
 
     # ── Tool calling ─────────────────────────────────────────────────
 
-    def call_with_tools(self, messages, system_prompt, tools, max_tokens=None, label=""):
+    def call_with_tools(self, messages, system_prompt, tools, max_tokens=None, label="", web_search=False):
         effective_max = max_tokens if max_tokens is not None else self._max_tokens
         api_messages = self._messages_to_anthropic(messages)
+
+        api_tools = list(tools)
+        if web_search:
+            api_tools.append({
+                "type": "web_search_20250305",
+                "name": "web_search",
+                "max_uses": 1,
+            })
 
         kwargs = {
             "model": self._model,
             "system": system_prompt,
             "messages": api_messages,
-            "tools": tools,
+            "tools": api_tools,
             "max_tokens": effective_max,
         }
 
-        if self._thinking and effective_max > self._thinking_budget:
-            if "opus-4-8" in self._model:
+        if self._thinking:
+            if self._supports_adaptive(self._model):
                 kwargs["thinking"] = {"type": "adaptive"}
                 kwargs["output_config"] = {"effort": "high"}
-            else:
+            elif effective_max > self._thinking_budget:
                 kwargs["thinking"] = {
                     "type": "enabled",
                     "budget_tokens": self._thinking_budget,
@@ -613,6 +654,14 @@ class AnthropicLLM(LLMBackend):
                     "type": "redacted_thinking",
                     "data": block.data,
                 })
+            else:
+                # Preserve unknown block types (server_tool_use,
+                # web_search_tool_result, future block types) in
+                # raw_content for message accumulation.
+                try:
+                    raw_content.append(block.model_dump())
+                except Exception:
+                    raw_content.append({"type": getattr(block, "type", "unknown")})
 
         return LLMResponse(
             stop_reason=resp.stop_reason,
@@ -620,6 +669,63 @@ class AnthropicLLM(LLMBackend):
             tool_calls=tool_calls,
             raw_content=raw_content,
         )
+
+    # ── Structured complete ─────────────────────────────────────────
+
+    _STRUCTURED_MAX_RETRIES = 2  # 1 retry on parse failure
+
+    def structured_complete(self, prompt, schema, system_prompt=None, label="", web_search=False):
+        """Return structured JSON matching schema via tool-call shim.
+
+        Single tool call with schema as input_schema, parse tool_use block.
+        No thinking — cheap extraction call.
+        """
+        for attempt in range(self._STRUCTURED_MAX_RETRIES):
+            tool = {
+                "name": "structured_output",
+                "description": "Return structured data matching schema",
+                "input_schema": schema,
+            }
+            tools = [tool]
+            if web_search:
+                tools.append({
+                    "type": "web_search_20250305",
+                    "name": "web_search",
+                    "max_uses": 1,
+                })
+            kwargs = {
+                "model": self._model,
+                "max_tokens": self._max_tokens,
+                "messages": [{"role": "user", "content": prompt}],
+                "tools": tools,
+            }
+            # Force tool use when web_search is off (Leng, Validator).
+            # Can't force when web_search is on — model needs to call
+            # web_search first (FiscalCalResolver).
+            if not web_search:
+                kwargs["tool_choice"] = {"type": "tool", "name": "structured_output"}
+            if system_prompt:
+                kwargs["system"] = system_prompt
+            # No thinking block — even if instance has thinking enabled.
+            resp = self._client.messages.create(**kwargs)
+            for block in resp.content:
+                if block.type == "tool_use" and block.name == "structured_output":
+                    from src.harness.trace import get_current_trace
+                    trace = get_current_trace()
+                    if trace:
+                        trace.record_llm_call(
+                            messages=[{"role": "user", "content": prompt}],
+                            response=json.dumps(block.input),
+                            model=self._model,
+                            label=label,
+                        )
+                    return block.input
+            # No tool_use block found — parse failure, retry
+            if attempt == self._STRUCTURED_MAX_RETRIES - 1:
+                raise ValueError(
+                    f"structured_complete: no tool_use block after "
+                    f"{self._STRUCTURED_MAX_RETRIES} attempts"
+                )
 
 
 # ── Gemini backend ──────────────────────────────────────────────────────
@@ -939,3 +1045,35 @@ def get_orchestrator_llm(config: Config) -> LLMBackend:
 def get_pteca_llm(config: Config) -> LLMBackend:
     """PTECA chart planning agent LLM — tool calling required."""
     return _get(config, "pteca_profile")
+
+
+# ── PMS2 factories ──────────────────────────────────────────────────────
+
+def get_pms2_sekei_llm(config: Config) -> LLMBackend:
+    """PMS2 Sekei LLM — stencil design, metric decomposition (tool calling)."""
+    return _get(config, "pms2_sekei_profile")
+
+
+def get_pms2_mapper_llm(config: Config) -> LLMBackend:
+    """PMS2 Mapper LLM — dir navigation, fuzzy firm matching (tool calling)."""
+    return _get(config, "pms2_mapper_profile")
+
+
+def get_pms2_fiscal_cal_llm(config: Config) -> LLMBackend:
+    """PMS2 FiscalCalResolver LLM — FY end lookup via web_search."""
+    return _get(config, "pms2_fiscal_cal_profile")
+
+
+def get_pms2_batch_planner_llm(config: Config) -> LLMBackend:
+    """PMS2 Batch Planner LLM — file routing reasoning (tool calling)."""
+    return _get(config, "pms2_batch_planner_profile")
+
+
+def get_pms2_leng_llm(config: Config) -> LLMBackend:
+    """PMS2 Leng LLM — cheap per-chunk extraction (structured_complete)."""
+    return _get(config, "pms2_leng_profile")
+
+
+def get_pms2_validator_llm(config: Config) -> LLMBackend:
+    """PMS2 Validator LLM — per-chunk verdict (tool calling)."""
+    return _get(config, "pms2_validator_profile")
