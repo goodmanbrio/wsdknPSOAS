@@ -11,7 +11,7 @@ from pathlib import Path
 import threading
 
 from src.harness.sysprompts import load_sysprompt
-from src.harness.terminal_router import ToolChannel, register
+from src.harness.terminal_router import ToolChannel, register, _router
 from src.harness.trace import (
     TraceBuffer,
     set_current_trace,
@@ -22,6 +22,7 @@ from src.scripts.config import Config
 from src.scripts.llm import get_pms2_leng_llm
 from src.scripts.PMS2.denom_reconcile import DENOM_FACTORS
 from src.scripts.PMS2.validator_loop import run_validator
+from src.scripts.PMS2.sekei_loop import _period_sort_key
 
 LENG_OUTPUT_SCHEMA = {
     "type": "object",
@@ -49,6 +50,7 @@ LENG_OUTPUT_SCHEMA = {
 
 _VALID_DENOMS = list(DENOM_FACTORS.keys())
 _LENG_MALFORMED_RETRIES = 2
+_COUNTER_INTERVAL = 25  # print progress every N completions
 
 
 def _build_cell_descriptions(
@@ -90,6 +92,47 @@ def _build_fiscal_calendar_text(fiscal_calendar: dict | None) -> str:
     for period, date_range in fiscal_calendar.items():
         lines.append(f"  {period} = {date_range}")
     return "\n".join(lines)
+
+
+def _print_plan_table(
+    plan: list[dict],
+    job_stencil: dict,
+    channel: ToolChannel,
+) -> None:
+    """Print metric-centric plan table via channel.print."""
+    col_letters = job_stencil["col_letters"]
+    periods = job_stencil["periods"]
+    rows = job_stencil["rows"]
+
+    metric_info: dict[str, dict] = {}  # {metric: {periods: set, files: list}}
+
+    for entry in plan:
+        fp = entry["file"]
+        for cell_id in entry["cells"]:
+            row_num = cell_id.lstrip("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+            col = cell_id[: len(cell_id) - len(row_num)]
+            row = rows.get(row_num, {})
+            metric = row.get("metric", "?")
+            col_idx = col_letters.index(col) if col in col_letters else -1
+            period = periods[col_idx] if 0 <= col_idx < len(periods) else "?"
+
+            if metric not in metric_info:
+                metric_info[metric] = {"periods": set(), "files": []}
+            metric_info[metric]["periods"].add(period)
+            if fp not in metric_info[metric]["files"]:
+                metric_info[metric]["files"].append(fp)
+
+    lines = [
+        "Batch plan:",
+        "| Metric | Periods | Files |",
+        "|--------|---------|-------|",
+    ]
+    for metric, info in metric_info.items():
+        ps = " ".join(sorted(info["periods"], key=_period_sort_key))
+        fs = ", ".join(info["files"])
+        lines.append(f"| {metric} | {ps} | {fs} |")
+
+    channel.print("\n".join(lines), markdown=True)
 
 
 def _run_single_leng(
@@ -264,6 +307,8 @@ def run_leng_caller(
                     }
             return "complete"
 
+        _print_plan_table(plan, job_stencil, channel)
+
         leng_ch.print(
             f"{len(leng_tasks)} chunks across "
             f"{len(plan_entry_cells)} files. Firing Lengs..."
@@ -273,24 +318,38 @@ def run_leng_caller(
         leng_results = []  # (file_path, node_id, leng_output)
         leng_errors_by_file: dict[str, list] = defaultdict(list)
 
-        with ThreadPoolExecutor(max_workers=config.pms2_leng_max_workers) as pool:
-            leng_futures = {}
-            for fp, nid, chunk_text, cells, cell_desc in leng_tasks:
-                fut = pool.submit(
-                    with_trace(trace, _run_single_leng),
-                    chunk_text, nid, cell_desc, fiscal_cal_text,
-                    firm, leng_backend, leng_sys_prompt,
-                )
-                leng_futures[fut] = (fp, nid, chunk_text, cells)
+        _router.start_spinner(f"PMS2-leng-{firm}")
+        try:
+            with ThreadPoolExecutor(max_workers=config.pms2_leng_max_workers) as pool:
+                leng_futures = {}
+                for fp, nid, chunk_text, cells, cell_desc in leng_tasks:
+                    fut = pool.submit(
+                        with_trace(trace, _run_single_leng),
+                        chunk_text, nid, cell_desc, fiscal_cal_text,
+                        firm, leng_backend, leng_sys_prompt,
+                    )
+                    leng_futures[fut] = (fp, nid, chunk_text, cells)
 
-            for fut in as_completed(leng_futures):
-                fp, nid, chunk_text, cells = leng_futures[fut]
-                try:
-                    _, leng_output = fut.result()
-                    leng_results.append((fp, nid, chunk_text, cells, leng_output))
-                except Exception as e:
-                    leng_ch.print(f"⚠ Leng chunk {nid} crashed: {e}")
-                    leng_errors_by_file[fp].append(f"{nid}: {e}")
+                done_count = 0
+                hit_count = 0
+                for fut in as_completed(leng_futures):
+                    fp, nid, chunk_text, cells = leng_futures[fut]
+                    try:
+                        _, leng_output = fut.result()
+                        leng_results.append((fp, nid, chunk_text, cells, leng_output))
+                        if leng_output.get("cells"):
+                            hit_count += 1
+                    except Exception as e:
+                        leng_ch.print(f"⚠ Leng chunk {nid} crashed: {e}")
+                        leng_errors_by_file[fp].append(f"{nid}: {e}")
+                    done_count += 1
+                    if done_count % _COUNTER_INTERVAL == 0 or done_count == len(leng_futures):
+                        leng_ch.print(
+                            f"{done_count}/{len(leng_futures)} "
+                            f"Lengs done ({hit_count} hits)"
+                        )
+        finally:
+            _router.stop_spinner()
 
         # ── STEP 3: Validator per hit (parallel) ────────────────────
         # Collect valid cell IDs from the job stencil for filtering
@@ -342,33 +401,49 @@ def run_leng_caller(
         this_run_rejections: dict[str, dict] = defaultdict(dict)
 
         if hits:
-            with ThreadPoolExecutor(max_workers=config.pms2_validator_max_workers) as pool:
-                validator_futures = {}
-                for fp, nid, chunk_text, cells, leng_cells in hits:
-                    # Build cell descriptions specifically for found cells
-                    val_cell_desc = _build_cell_descriptions(
-                        list(leng_cells.keys()), job_stencil, firm,
-                    )
-                    fut = pool.submit(
-                        with_trace(trace, _run_validator_wrapper),
-                        fp, nid, chunk_text, leng_cells,
-                        val_cell_desc, fiscal_cal_text,
-                        firm, job_stencil, stencil_lock,
-                        config, channel,
-                    )
-                    validator_futures[fut] = fp
+            _router.start_spinner(f"PMS2-val-{firm}")
+            try:
+                with ThreadPoolExecutor(max_workers=config.pms2_validator_max_workers) as pool:
+                    validator_futures = {}
+                    for fp, nid, chunk_text, cells, leng_cells in hits:
+                        # Build cell descriptions specifically for found cells
+                        val_cell_desc = _build_cell_descriptions(
+                            list(leng_cells.keys()), job_stencil, firm,
+                        )
+                        fut = pool.submit(
+                            with_trace(trace, _run_validator_wrapper),
+                            fp, nid, chunk_text, leng_cells,
+                            val_cell_desc, fiscal_cal_text,
+                            firm, job_stencil, stencil_lock,
+                            config, channel,
+                        )
+                        validator_futures[fut] = fp
 
-                for fut in as_completed(validator_futures):
-                    fp = validator_futures[fut]
-                    try:
-                        file_path, cell_outcomes = fut.result()
-                        for cid, out, reason in cell_outcomes:
-                            if out in ("written", "skipped"):
-                                this_run_found[file_path].append(cid)
-                            elif out == "rejected" and reason:
-                                this_run_rejections[file_path][cid] = reason
-                    except Exception as e:
-                        val_ch.print(f"⚠ crashed: {e}")
+                    done_count = 0
+                    written_count = 0
+                    rejected_count = 0
+                    for fut in as_completed(validator_futures):
+                        fp = validator_futures[fut]
+                        try:
+                            file_path, cell_outcomes = fut.result()
+                            for cid, out, reason in cell_outcomes:
+                                if out in ("written", "skipped"):
+                                    this_run_found[file_path].append(cid)
+                                    written_count += 1
+                                elif out == "rejected" and reason:
+                                    this_run_rejections[file_path][cid] = reason
+                                    rejected_count += 1
+                        except Exception as e:
+                            val_ch.print(f"⚠ crashed: {e}")
+                        done_count += 1
+                        if done_count % _COUNTER_INTERVAL == 0 or done_count == len(validator_futures):
+                            val_ch.print(
+                                f"{done_count}/{len(validator_futures)} "
+                                f"Validators done "
+                                f"({written_count} written, {rejected_count} rejected)"
+                            )
+            finally:
+                _router.stop_spinner()
 
         # ── STEP 4: Update searched_files ───────────────────────────
         for fp, cells in plan_entry_cells.items():

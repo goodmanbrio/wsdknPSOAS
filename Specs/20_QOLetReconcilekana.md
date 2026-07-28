@@ -1,37 +1,12 @@
-## Frontmatter
-- Write date: 20260728
-- Update date: 
-- Codebase last changed date: 20260728
-- Implemented Y/N
-- 3 sentence summary
+# Spec 20: QOLet Reconcile かな
 
-## Problem space
-- Problem definition
-- Failure instance
-- Points of failure
+Index spec. Four problems, two sub-specs.
 
-## Outcome imagination
-- Target UX 
-- Wat was desired by user
+| Sub-spec | Problems | Scope |
+|----------|----------|-------|
+| `20a_QOL.md` | Phase 1 terminal visibility (BP plan table, Leng/Validator counters) | UX only, no extraction logic |
+| `20b_ReconcileKana.md` | FiscalCalResolver validation, Leng sysprompt quality, divergence reconciliation | Extraction quality + data integrity |
 
-# Solution space
-- Idea of solving 
-- Type: breaking, patch, config, etc
-- Points of chg
-  - Graph (pipeline) design affected (node existential chg, )
-  - Downstream nodes affected (input/output contract)
-
-## Graph Change 
-- Design diff is just as important as line by line diff
-- (mermaid graph of current pipeline/loop as nodes & edges & clear highlight of input / output contracts)
-- (mermaid graph of proposed chg in pipeline/loop as nodes & edges & clear highlight of input / output contracts)
-
-## Hence File by file Change
-
-## Failure modes
-
-## Unit tests
-
-## LLM unit tests
-
-## Execution
+Dependency: 20b problems are causally chained (upstream → downstream).
+Bad FiscalCal → bad Leng → bad reconciliation.
+20a is orthogonal to 20b.
