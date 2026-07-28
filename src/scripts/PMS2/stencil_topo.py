@@ -103,6 +103,7 @@ def _assign_structure(
     sorted_rows: list[dict],
     periods: list[str],
     firms: list[str],
+    granularity: str = "annual",
 ) -> tuple[dict, dict, list[dict]]:
     """Assign row numbers, rewrite formulas, build stencils.
 
@@ -196,6 +197,7 @@ def _assign_structure(
     work_stencil = {
         "firms": firms,
         "periods": periods,
+        "granularity": granularity,
         "col_letters": col_letters,
         "rows": work_rows,
         "values": values,
@@ -249,6 +251,7 @@ def _assign_structure(
         job_stencils.append({
             "firm": firm,
             "periods": periods,
+            "granularity": granularity,
             "col_letters": col_letters,
             "rows": firm_rows,
             "values": firm_values,

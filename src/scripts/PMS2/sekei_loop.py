@@ -13,7 +13,7 @@ from pathlib import Path
 from src.harness.opaque_registry import registry
 from src.harness.sysprompts import load_sysprompt
 from src.harness import terminal_router
-from src.harness.terminal_router import ToolChannel, _router
+from src.harness.terminal_router import ToolChannel, _router, register
 from src.harness.trace import (
     TraceBuffer,
     set_current_trace,
@@ -26,6 +26,64 @@ from src.scripts.PMS2.mapper import run_mapper_for_firm
 from src.scripts.PMS2.stencil_topo import _topo_sort_rows, _assign_structure
 
 _MAX_TURNS = 8
+
+# ── Period validation helpers (spec 19) ─────────────────────────────
+
+_PERIOD_RE = re.compile(r"^(Q[1-4]|H[12])?FY\d{4}$")
+
+_GRANULARITY_RE = {
+    "annual":    re.compile(r"^FY\d{4}$"),
+    "quarterly": re.compile(r"^Q[1-4]FY\d{4}$"),
+    "half":      re.compile(r"^H[12]FY\d{4}$"),
+}
+
+_GRANULARITY_FMT = {
+    "annual":    "FY{year} (e.g. FY2025)",
+    "quarterly": "Q{n}FY{year} (e.g. Q3FY2025)",
+    "half":      "H{n}FY{year} (e.g. H1FY2025)",
+}
+
+
+def _period_sort_key(period: str) -> tuple[int, int]:
+    """Return (year, sub) for chronological sorting.
+
+    FY2025      → (2025, 0)
+    Q3FY2025    → (2025, 3)
+    H2FY2025    → (2025, 2)
+    Invalid     → (9999, 99)  sorts last
+    """
+    m = re.match(r"^(Q(\d+)|H(\d+))?FY(\d{4})$", period)
+    if not m:
+        return (9999, 99)
+    year = int(m.group(4))
+    if m.group(2) is not None:    # Q prefix
+        sub = int(m.group(2))
+    elif m.group(3) is not None:  # H prefix
+        sub = int(m.group(3))
+    else:                          # annual — no prefix
+        sub = 0
+    return (year, sub)
+
+
+def _check_period_granularity_consistency(
+    periods: list[str], granularity: str
+) -> str | None:
+    """Return error string if any period's format doesn't match granularity.
+
+    Returns None if all periods are consistent.
+    """
+    pat = _GRANULARITY_RE.get(granularity)
+    if pat is None:
+        return f"Error: unknown granularity '{granularity}'."
+    bad = [p for p in periods if not pat.fullmatch(p)]
+    if bad:
+        return (
+            f"Error: periods {bad} inconsistent with "
+            f"granularity='{granularity}'. "
+            f"Expected format: {_GRANULARITY_FMT[granularity]}."
+        )
+    return None
+
 
 # ── Sekei tool schemas (spec 17 § Sekei tools) ──────────────────────
 
@@ -97,6 +155,11 @@ SEKEI_TOOLS = [
                     "items": {"type": "string"},
                     "description": "e.g. ['FY2025', 'FY2026', 'FY2027']",
                 },
+                "granularity": {
+                    "type": "string",
+                    "enum": ["annual", "quarterly", "half"],
+                    "description": "Granularity confirmed with user.",
+                },
                 "rows": {
                     "type": "array",
                     "items": {
@@ -154,7 +217,7 @@ SEKEI_TOOLS = [
                     },
                 },
             },
-            "required": ["firms", "periods", "rows"],
+            "required": ["firms", "periods", "granularity", "rows"],
         },
     },
 ]
@@ -166,10 +229,7 @@ EXPLORATION_TOOLS = {"run_mapper"}
 # ── Sekei agent loop ─────────────────────────────────────────────────
 
 def run_sekei(
-    firms: list[str],
-    expanded_periods: list[str],
     query: str,
-    granularity: str,
     config: Config,
     channel: ToolChannel,
     session_dir: Path,
@@ -180,7 +240,10 @@ def run_sekei(
 
     Returns (work_stencil, ans_stencil, job_stencils, file_inventories).
     Raises RuntimeError if MAX_TURNS exhausted without finalize.
+    channel param kept for pipeline-level logging (unused internally).
     """
+    sekei_ch = register("PMS2-Sekei")
+
     # Load system prompt with template vars
     valid_units = json.loads(
         (Path(__file__).parent / "hardcode_dependencies" / "units.json")
@@ -191,9 +254,6 @@ def run_sekei(
         "pms2_sekei",
         config.pms2_sekei_profile,
         query=query,
-        firms=json.dumps(firms),
-        periods=json.dumps(expanded_periods),
-        granularity=granularity,
         top_level_dirs=json.dumps(top_level_dirs or []),
         valid_units=json.dumps(valid_units),
     )
@@ -202,7 +262,6 @@ def run_sekei(
 
     # Mutable closure state — run_mapper handler writes, finalize reads
     file_inventories: dict[str, list[dict]] = {}
-    pipeline_firms = firms
     # Hard gate: LLM must not finalize until user explicitly confirms
     user_confirmed = False
 
@@ -215,7 +274,7 @@ def run_sekei(
 
     try:
         while turn_counter < _MAX_TURNS:
-            _router.start_spinner("PMS2")
+            _router.start_spinner("PMS2-Sekei")
             try:
                 response = backend.call_with_tools(
                     messages=messages,
@@ -228,7 +287,7 @@ def run_sekei(
 
             # Print LLM text (stencil previews, explanations, etc.)
             if response.text and response.text.strip():
-                channel.print(response.text, markdown=True)
+                sekei_ch.print(response.text, markdown=True)
 
             # end_turn without tool call = error
             if response.stop_reason == "end_turn":
@@ -260,7 +319,7 @@ def run_sekei(
                 nonlocal user_confirmed
 
                 if tc.name == "ask_user":
-                    answer = channel.input(tc.input["question"], markdown=True)
+                    answer = sekei_ch.input(tc.input["question"], markdown=True)
                     trace.record_user_interaction(
                         tc.input["question"], answer
                     )
@@ -288,7 +347,7 @@ def run_sekei(
 
                     # Hard gate: user must have confirmed via ask_user
                     if not user_confirmed:
-                        ans = channel.input(
+                        ans = sekei_ch.input(
                             "Finalize stencil? [y/n]"
                         ).strip().lower()
                         if not ans.startswith("y"):
@@ -299,8 +358,7 @@ def run_sekei(
                             ), None
 
                     data, status = _handle_finalize(
-                        tc.input, pipeline_firms, expanded_periods,
-                        file_inventories, session_dir, channel,
+                        tc.input, file_inventories, session_dir,
                     )
                     return tc, status, data
 
@@ -314,7 +372,7 @@ def run_sekei(
                             "turn after receiving the user's answer."
                         ), None
                     result = _handle_run_mapper(
-                        tc.input, config, query, channel, trace,
+                        tc.input, config, query, sekei_ch, trace,
                         debug_dir or (session_dir / "pms2"),
                     )
                     # Store inventories as opaque handles
@@ -448,11 +506,8 @@ def _handle_run_mapper(
 
 def _handle_finalize(
     params: dict,
-    pipeline_firms: list[str],
-    expanded_periods: list[str],
     file_inventories: dict,
     session_dir: Path,
-    channel: ToolChannel,
 ) -> tuple[tuple | None, str]:
     """Process finalize_stencil tool call.
 
@@ -462,41 +517,47 @@ def _handle_finalize(
       status_string = always present, sent to LLM as tool result.
     """
     try:
-        # ── Step 1: Validate firms ────────────────────────────────────
+        # ── Step 1: Validate granularity ──────────────────────────────
+        granularity = params.get("granularity")
+        if granularity not in ("annual", "quarterly", "half"):
+            return None, (
+                f"Error: granularity '{granularity}' invalid. "
+                f"Must be one of: annual, quarterly, half."
+            )
+
+        # ── Step 2: Validate firms ────────────────────────────────────
         submitted_firms = params.get("firms", [])
         if not submitted_firms:
             return None, "Error: firms list is empty."
 
-        extra_firms = set(submitted_firms) - set(pipeline_firms)
-        if extra_firms:
-            return None, (
-                f"Error: firms {sorted(extra_firms)} not in pipeline "
-                f"firms {pipeline_firms}. Exact string match required."
-            )
-
-        missing_firms = set(pipeline_firms) - set(submitted_firms)
-        if missing_firms:
-            channel.print(f"⚠ {sorted(missing_firms)} not in stencil — dropped")
-
-        # ── Step 2: Validate + canonicalize periods ───────────────────
-        submitted_periods = set(params.get("periods", []))
-        if not submitted_periods:
+        # ── Step 3: Validate + canonicalize periods ───────────────────
+        raw_periods = params.get("periods", [])
+        if not raw_periods:
             return None, "Error: periods list is empty."
 
-        extra_periods = submitted_periods - set(expanded_periods)
-        if extra_periods:
+        # Dedup, preserve order
+        submitted_periods = list(dict.fromkeys(raw_periods))
+
+        # Regex validation
+        bad_format = [p for p in submitted_periods if not _PERIOD_RE.fullmatch(p)]
+        if bad_format:
             return None, (
-                f"Error: periods {sorted(extra_periods)} not in "
-                f"expanded periods {expanded_periods}. "
-                f"Use exact strings from your context."
+                f"Error: periods {bad_format} have invalid format. "
+                f"Use canonical format: FY{{year}}, Q{{n}}FY{{year}}, "
+                f"or H{{n}}FY{{year}} with 4-digit year (e.g. Q3FY2025)."
             )
 
-        # Preserve canonical ordering from pipeline
-        periods = [p for p in expanded_periods if p in submitted_periods]
-        if not periods:
-            return None, "Error: no valid periods after filtering."
+        # Granularity consistency
+        consistency_err = _check_period_granularity_consistency(
+            submitted_periods, granularity
+        )
+        if consistency_err:
+            return None, consistency_err
 
-        # ── Step 3: Validate rows ─────────────────────────────────────
+        # Chronological sort
+        periods = sorted(submitted_periods, key=_period_sort_key)
+
+        # ── Step 4: Validate rows ─────────────────────────────────────
         rows = params.get("rows", [])
         if not rows:
             return None, "Error: no rows in stencil."
@@ -510,15 +571,15 @@ def _handle_finalize(
                     f"{submitted_firms}."
                 )
 
-        # ── Step 4: Topo sort ─────────────────────────────────────────
+        # ── Step 5: Topo sort ─────────────────────────────────────────
         sorted_rows = _topo_sort_rows(rows, submitted_firms)
 
-        # ── Step 5: Assign structure (row nums, Rn formulas, stencils)
+        # ── Step 6: Assign structure (row nums, Rn formulas, stencils)
         work, ans, jobs = _assign_structure(
-            sorted_rows, periods, submitted_firms
+            sorted_rows, periods, submitted_firms, granularity
         )
 
-        # ── Step 6: Save to disk (Phase 0 snapshot — pre-fill) ───────
+        # ── Step 7: Save to disk (Phase 0 snapshot — pre-fill) ───────
         pms2_dir = session_dir / "pms2"
         pms2_dir.mkdir(parents=True, exist_ok=True)
         (pms2_dir / "work_stencil.json").write_text(
@@ -526,6 +587,7 @@ def _handle_finalize(
         )
 
         # ── Summary ──────────────────────────────────────────────────
+        fin_ch = register("PMS2-StencilFinalizer")
         total_rows = len(work["rows"])
         total_cells = len(work["values"])
         ans_metrics = ans["metrics"]
@@ -537,7 +599,7 @@ def _handle_finalize(
             f"Topo sort OK. Formulas rewritten to Rn notation. "
             f"Saved to {pms2_dir / 'work_stencil.json'}."
         )
-        channel.print(summary)
+        fin_ch.print(summary)
 
         return (work, ans, jobs, file_inventories), summary
 

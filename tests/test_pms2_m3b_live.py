@@ -99,21 +99,21 @@ def test_dispatcher_stub_annual():
 
     firms = ["LITE", "Innolight"]
     periods = ["FY2025", "FY2026", "FY2027"]
-    query = "EV/EBITDA, P/E, Laser Revenue"
+    query = "EV/EBITDA, P/E, Laser Revenue for LITE and Innolight, FY2025-FY2027 annual"
     granularity = "annual"
 
-    # Answers: Sekei ask_user (sector + disambig), preview confirm,
-    # then dispatcher force-ask-user → "n" to abort (default)
+    # Answers: Sekei ask_user (firms/periods/granularity + sector + disambig),
+    # preview confirm, then dispatcher force-ask-user → "n" to abort (default)
     answers = [
         (
-            "yes include 0 Optical for sector context. "
-            "Currencies: LITE USD, Innolight CNY. "
-            "EV = Market Cap + Net Debt. "
-            "EBITDA = Operating Income + D&A. "
+            "Confirmed. Firms LITE and Innolight, periods FY2025/FY2026/FY2027, annual. "
+            "Include 0 Optical sector. Currencies: LITE USD, Innolight CNY. "
+            "EV = Market Cap + Net Debt. EBITDA = Operating Income + D&A. "
             "P/E = Share Price / EPS. "
             "Laser Revenue = Laser segment revenue (retrieve directly)."
         ),
-        "y",  # confirm stencil preview
+        "y",   # stencil preview
+        "y",   # buffer
     ]
 
     # Monkey-patch terminal_router.register to use AutoChannels
@@ -135,10 +135,7 @@ def test_dispatcher_stub_annual():
         from src.scripts.PMS2.pms2 import run_pms2_pipeline
 
         display_stencils = run_pms2_pipeline(
-            firms=firms,
             query=query,
-            periods=periods,
-            granularity=granularity,
             session_dir=session_dir,
             channel=mock_register("PMS2"),
             config=config,
@@ -326,6 +323,7 @@ def test_fiscal_cal_skipped_annual():
     job_stencil = {
         "firm": "TestFirm",
         "periods": ["FY2025"],
+        "granularity": "annual",
         "col_letters": ["A"],
         "rows": {
             "1": {
@@ -371,8 +369,6 @@ def test_fiscal_cal_skipped_annual():
             firm="TestFirm",
             job_stencil=job_stencil,
             file_inventory=[],
-            granularity="annual",
-            periods=["FY2025"],
             channel=channel,
             config=Config.from_env(),
             docstore=None,

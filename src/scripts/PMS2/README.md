@@ -1,7 +1,7 @@
 # PMS2 — Poony Multiretrieval System 2
 
 Multi-firm financial data extraction pipeline. Single orchestrator
-call `run_pms2(firms, query, periods, granularity)` drives stencil
+call `run_pms2(query)` drives stencil
 design, file discovery, parallel chunk-level extraction, validation,
 and formula computation.
 
@@ -16,7 +16,7 @@ structures.
  Orchestrator
     │
     ▼
- run_pms2(firms, query, periods, granularity)
+ run_pms2(query)
     │
  ═══════════════════════════════════════════════════════════════
  PHASE 0: DESIGN
@@ -126,7 +126,7 @@ is all Haiku.
 
 ```
 PMS2/
-├── pms2.py                 pipeline entry: _expand_periods, run_pms2_pipeline
+├── pms2.py                 pipeline entry: run_pms2_pipeline
 ├── sekei_loop.py           Phase 0 agent loop: ask_user + run_mapper + finalize
 ├── mapper.py               per-firm dir discovery agent loop + _walk_dirs
 ├── dispatcher.py           Phase 1 loop: prune → BP → dry_run check

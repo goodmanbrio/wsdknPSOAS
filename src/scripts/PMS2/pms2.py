@@ -1,10 +1,10 @@
 """PMS2 pipeline entry point.
 
-T0 scope: _expand_periods only.
 M3a: run_pms2_pipeline wired — Phase 0 (Sekei) only, no Dispatcher.
 M3b: Phase 1 (Dispatchers) wired — stubbed extraction, proves control flow.
 M5: Phase 2 (merge + compute) wired after dispatchers complete.
 M6: End-to-end. Staleness check added.
+Spec 19: firms/periods/granularity delegated to Sekei. _expand_periods removed.
 """
 
 import json
@@ -20,10 +20,6 @@ from src.scripts.config import Config
 from src.scripts.PMS2.sekei_loop import run_sekei
 from src.scripts.PMS2.dispatcher import run_dispatcher
 from src.scripts.PMS2.merge_compute import run_phase2
-
-_Q_PREFIXES = ("Q1", "Q2", "Q3", "Q4")
-_H_PREFIXES = ("H1", "H2")
-
 
 def _newest_mtime(directory: Path, exclude_json: bool = False) -> float | None:
     """Return the newest mtime across all files in directory (recursive).
@@ -82,42 +78,8 @@ def _check_index_staleness(config: Config, channel) -> None:
         )
 
 
-def _expand_periods(periods: list[str], granularity: str) -> list[str]:
-    """Expand FY periods by granularity. Already-expanded pass through.
-
-    Guard: annual granularity + Q/H-prefixed period = contradiction.
-    Orchestrator should not produce this. Raise so it surfaces
-    loudly rather than silently extracting wrong timeframes.
-    """
-    if granularity == "annual":
-        # Guard: Q/H prefix with annual = contradiction
-        for p in periods:
-            if p.startswith(_Q_PREFIXES + _H_PREFIXES):
-                raise ValueError(
-                    f"Period '{p}' has quarterly/half prefix but "
-                    f"granularity is 'annual'. Fix orchestrator params."
-                )
-        return periods
-
-    expanded = []
-    for p in periods:
-        if p.startswith(_Q_PREFIXES + _H_PREFIXES):
-            # Already expanded (e.g. "Q3FY2025"), pass through
-            expanded.append(p)
-        elif granularity == "quarterly":
-            for q in _Q_PREFIXES:
-                expanded.append(f"{q}{p}")
-        elif granularity == "half":
-            for h in _H_PREFIXES:
-                expanded.append(f"{h}{p}")
-    return list(dict.fromkeys(expanded))  # dedup, preserve order
-
-
 def run_pms2_pipeline(
-    firms: list[str],
     query: str,
-    periods: list[str],
-    granularity: str,
     session_dir: Path,
     channel: ToolChannel | None = None,
     config: Config | None = None,
@@ -125,8 +87,9 @@ def run_pms2_pipeline(
 ) -> list[dict]:
     """Run full PMS2 pipeline.
 
-    M3a scope: Phase 0 (Sekei) only. Returns display stencils
-    (one per firm, all null values — no extraction yet).
+    Firms, periods, and granularity are parsed by Sekei from the query
+    and confirmed with the user. They are read from work_stencil after
+    Sekei completes.
 
     Pre-flight guards fire before Sekei — fail-fast even though
     docstore/file_path_index are only needed for Phase 1 (M4+).
@@ -160,9 +123,6 @@ def run_pms2_pipeline(
     # ── Staleness check (warning only) ──────────────────────────
     _check_index_staleness(config, channel)
 
-    # ── Period expansion ─────────────────────────────────────────
-    expanded_periods = _expand_periods(periods, granularity)
-
     # ── Top-level dir injection for Sekei ────────────────────────
     top_level_dirs = sorted([
         name for name in os.listdir(config.pms2_data_dir)
@@ -171,23 +131,22 @@ def run_pms2_pipeline(
         and (config.pms2_data_dir / name).is_dir()
     ])
 
-    channel.print(
-        f"PMS2 pipeline: {len(firms)} firms, "
-        f"{len(expanded_periods)} periods, {granularity}."
-    )
+    channel.print("PMS2 pipeline starting.")
 
     # ── Phase 0: Sekei ───────────────────────────────────────────
     work_stencil, ans_stencil, job_stencils, file_inventories = run_sekei(
-        firms=firms,
-        expanded_periods=expanded_periods,
         query=query,
-        granularity=granularity,
         config=config,
         channel=channel,
         session_dir=session_dir,
         debug_dir=debug_dir,
         top_level_dirs=top_level_dirs,
     )
+
+    # ── Read firms/periods/granularity from stencil (set by Sekei) ──
+    firms = work_stencil["firms"]
+    periods = work_stencil["periods"]
+    granularity = work_stencil["granularity"]
 
     # ── Resolve file inventories from opaque handles ────────────
     raw_inventories: dict[str, list[dict]] = {}
@@ -221,8 +180,6 @@ def run_pms2_pipeline(
             firm=firm,
             job_stencil=job_stencil,
             file_inventory=raw_inventories.get(firm, []),
-            granularity=granularity,
-            periods=expanded_periods,
             channel=firm_channel,
             config=config,
             docstore=docstore,

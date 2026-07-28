@@ -228,8 +228,6 @@ def run_dispatcher(
     firm: str,
     job_stencil: dict,
     file_inventory: list[dict],
-    granularity: str,
-    periods: list[str],
     channel: ToolChannel,
     config: Config,
     docstore,
@@ -241,6 +239,10 @@ def run_dispatcher(
     Returns filled job_stencil with status field.
     """
     stencil_lock = threading.Lock()
+
+    # Read granularity and periods from stencil (set by _assign_structure)
+    granularity = job_stencil["granularity"]
+    periods = job_stencil["periods"]
 
     # Trace: covers pre-loop (fiscal cal) + iteration 0
     trace = TraceBuffer(f"PMS2-disp-{firm}")

@@ -250,15 +250,11 @@ def _exec_pms2(params: dict) -> str:
     if _session_dir is None:
         return "Error: no active session (run_pms2 called outside harness)."
 
-    firms = params["firms"]
     query = params["query"]
-    periods = params["periods"]
-    granularity = params["granularity"]
     channel = register("PMS2")
 
     display_stencils = run_pms2_pipeline(
-        firms=firms, query=query, periods=periods,
-        granularity=granularity,
+        query=query,
         session_dir=_session_dir,
         channel=channel, config=_config, debug_dir=_debug_dir,
     )

@@ -60,19 +60,20 @@ class AutoChannel:
 
 FIRMS = ["LITE", "Innolight"]
 PERIODS = ["FY2020", "FY2021", "FY2026"]
-QUERY = "Revenue, Gross Margin"
+QUERY = "Revenue, Gross Margin for LITE and Innolight, FY2020/FY2021/FY2026 annual"
 GRANULARITY = "annual"
 
 # Auto-answers for Sekei's ask_user calls:
-#   Turn 1: sector folders + currencies + metric disambiguation
+#   Turn 1: firms/periods/granularity + sector folders + currencies + metric disambiguation
 #   Turn 3: stencil preview confirmation
 ANSWERS = [
     (
-        "yes include 0 Optical for sector context. "
-        "Currencies correct: LITE USD, Innolight CNY. "
+        "Confirmed. Firms LITE and Innolight, periods FY2020/FY2021/FY2026, annual. "
+        "Include 0 Optical sector. Currencies: LITE USD, Innolight CNY. "
         "Gross Margin = Gross Profit / Revenue, standard definition."
     ),
-    "y",
+    "y",   # stencil preview
+    "y",   # buffer
 ]
 
 # Expected stencil structure:
@@ -112,6 +113,12 @@ def validate_stencil(work, ans, jobs, file_inv, run_idx):
     # ── Periods match ────────────────────────────────────────────
     if work["periods"] != PERIODS:
         errors.append(f"periods: {work['periods']} != {PERIODS}")
+
+    # ── Granularity present + correct ────────────────────────────
+    if "granularity" not in work:
+        errors.append("work_stencil missing 'granularity' key")
+    elif work["granularity"] != GRANULARITY:
+        errors.append(f"granularity: {work['granularity']} != {GRANULARITY}")
 
     # ── Ans metrics ──────────────────────────────────────────────
     ans_metrics = set(ans["metrics"])
@@ -192,7 +199,6 @@ def validate_stencil(work, ans, jobs, file_inv, run_idx):
 def run_one(run_idx, session_dir):
     """Execute one run_sekei call. Returns (work, ans, jobs, file_inv, elapsed, errors)."""
     config = Config.from_env()
-    channel = AutoChannel(list(ANSWERS))
 
     top_level_dirs = ["LITE", "Innolight", "0 Optical"]
 
@@ -200,15 +206,26 @@ def run_one(run_idx, session_dir):
     print(f"RUN {run_idx + 1}")
     print(f"{'='*60}")
 
+    # Patch terminal_router.register so sekei_ch + fin_ch use AutoChannel.
+    # run_sekei creates sekei_ch = register("PMS2-Sekei") internally;
+    # without this patch that would block on real terminal input.
+    import src.harness.terminal_router as tr
+    original_register = tr.register
+    channel_map: dict[str, AutoChannel] = {}
+
+    def mock_register(label):
+        if label not in channel_map:
+            channel_map[label] = AutoChannel(list(ANSWERS))
+        return channel_map[label]
+
+    tr.register = mock_register
+
     t0 = time.time()
     try:
         result = run_sekei(
-            firms=FIRMS,
-            expanded_periods=PERIODS,
             query=QUERY,
-            granularity=GRANULARITY,
             config=config,
-            channel=channel,
+            channel=mock_register("PMS2"),
             session_dir=session_dir,
             top_level_dirs=top_level_dirs,
         )
@@ -228,6 +245,9 @@ def run_one(run_idx, session_dir):
     except Exception as e:
         elapsed = time.time() - t0
         return None, None, None, None, elapsed, [f"CRASH: {e}"]
+
+    finally:
+        tr.register = original_register
 
 
 def main():

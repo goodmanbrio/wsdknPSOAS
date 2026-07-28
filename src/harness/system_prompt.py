@@ -21,37 +21,16 @@ TOOL_DEFINITIONS = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "firms": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": (
-                        "Firm names/tickers. e.g. ['LITE', 'Innolight']"
-                    ),
-                },
                 "query": {
                     "type": "string",
                     "description": (
-                        "What to extract. e.g. "
-                        "'Revenue, Laser Rev, OpProfit, EPS, MktCap, P/Rev, P/E'"
-                    ),
-                },
-                "periods": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": (
-                        "Fiscal periods. e.g. ['FY2025', 'FY2026', 'FY2027']"
-                    ),
-                },
-                "granularity": {
-                    "type": "string",
-                    "enum": ["annual", "quarterly", "half"],
-                    "description": (
-                        "Period granularity. annual=full FY, "
-                        "quarterly=per quarter, half=per half."
+                        "Full user query including firms, metrics, "
+                        "and periods. e.g. 'LITE, Innolight gross margin, "
+                        "revenue FY2025-FY2027 quarterly'"
                     ),
                 },
             },
-            "required": ["firms", "query", "periods", "granularity"],
+            "required": ["query"],
         },
     },
     # 06_tool_pms1 — COMMENTED OUT: PMS2 replaces PMS1. Code stays in tree.
