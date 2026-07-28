@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 
 from src.harness.sysprompts import load_sysprompt
-from src.harness.terminal_router import ToolChannel
+from src.harness.terminal_router import ToolChannel, _router
 from src.harness.trace import TraceBuffer, set_current_trace, clear_current_trace
 from src.scripts.config import Config
 from src.scripts.llm import LLMResponse, get_pms2_mapper_llm
@@ -161,13 +161,16 @@ def run_mapper_for_firm(
 
     try:
         while turn_counter < _MAX_TURNS:
-            channel.print(f"Mapper [{firm}] thinking...")
-            response = backend.call_with_tools(
-                messages=messages,
-                system_prompt=sys_prompt,
-                tools=MAPPER_TOOLS,
-                label=f"PMS2-map-{firm}",
-            )
+            _router.start_spinner(f"PMS2-map-{firm}")
+            try:
+                response = backend.call_with_tools(
+                    messages=messages,
+                    system_prompt=sys_prompt,
+                    tools=MAPPER_TOOLS,
+                    label=f"PMS2-map-{firm}",
+                )
+            finally:
+                _router.stop_spinner()
 
             # end_turn without tool call = error
             if response.stop_reason == "end_turn":
@@ -260,7 +263,7 @@ def run_mapper_for_firm(
 
             if terminal_result is not None:
                 channel.print(
-                    f"Mapper [{firm}]: {len(terminal_result)} files found."
+                    f"{len(terminal_result)} files found."
                 )
                 return terminal_result
 

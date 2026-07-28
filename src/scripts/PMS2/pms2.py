@@ -245,10 +245,10 @@ def run_pms2_pipeline(
                 result = fut.result()
                 completed_jobs.append(result)
                 channel.print(
-                    f"Dispatcher [{firm}]: {result.get('status', '?')}"
+                    f"{firm}: dispatcher {result.get('status', '?')}"
                 )
             except Exception as e:
-                channel.print(f"Dispatcher [{firm}] crashed: {e}")
+                channel.print(f"{firm}: dispatcher crashed: {e}")
 
     clear_current_trace()
 
@@ -259,18 +259,19 @@ def run_pms2_pipeline(
         total = len(job["values"])
         status = job.get("status", "?")
         channel.print(
-            f"[PMS2] {firm_name}: {filled}/{total} cells filled, "
+            f"{firm_name}: {filled}/{total} cells filled, "
             f"status={status}"
         )
 
     # ── Phase 2: Merge + Compute ───────────────────────────────
-    channel.print("Phase 2: merge + compute.")
+    merge_ch = register("PMS2-merge")
+    merge_ch.print("merge + compute")
     display_stencils = run_phase2(
         work_stencil=work_stencil,
         ans_stencil=ans_stencil,
         completed_jobs=completed_jobs,
         session_dir=session_dir,
-        channel=channel,
+        channel=merge_ch,
     )
 
     return display_stencils

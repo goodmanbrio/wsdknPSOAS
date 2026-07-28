@@ -77,8 +77,8 @@ class Config:
     pms2_mapper_profile: str = "anthropic_hayasui"            # Haiku 4.5: dir nav, low stakes
     pms2_fiscal_cal_profile: str = "anthropic_hayasui"        # Haiku: FY end lookup via web_search
     pms2_batch_planner_profile: str = "anthropic_sonnetmedthink"  # Sonnet 4.6 + 5k thinking: file routing reasoning
-    pms2_leng_profile: str = "anthropic_hayasui"              # Haiku: cheap extraction
-    pms2_validator_profile: str = "anthropic_hayasui"          # Haiku: cheap verification
+    pms2_leng_profile: str = "deepseek_v4flash_leng"            # DeepSeek V4 Flash: cheapest extraction (9x cheaper than Haiku), better recall than V4 Pro
+    pms2_validator_profile: str = "deepseek_v4pro_validator"   # DeepSeek V4 Pro + thinking: cheap verification
     pms2_leng_max_workers: int = 100                           # concurrent Leng structured_complete calls per firm
     pms2_validator_max_workers: int = 50                       # concurrent Validator agent loops per firm
 

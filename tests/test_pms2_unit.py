@@ -1375,3 +1375,275 @@ class TestRunPhase2:
         from src.scripts.PMS2.pms2 import run_pms2_pipeline
         # If import fails, test fails. No need to call it.
         assert callable(run_pms2_pipeline)
+
+
+# =====================================================================
+# Spec 18: OpenAICompatibleLLM.structured_complete() unit tests
+# =====================================================================
+
+from unittest.mock import MagicMock, patch
+from src.scripts.llm import OpenAICompatibleLLM
+
+
+def _make_mock_openai_llm():
+    """Build OpenAICompatibleLLM with mocked OpenAI client."""
+    with patch("src.scripts.llm.OpenAI"):
+        llm = OpenAICompatibleLLM(
+            model="deepseek-v4-pro",
+            api_key="test-key",
+            base_url="https://api.deepseek.com/v1",
+            temperature=0.0,
+            max_tokens=3000,
+            thinking=False,
+        )
+    llm._client = MagicMock()
+    return llm
+
+
+def _mock_tool_call_response(arguments_json: str, name: str = "structured_output"):
+    """Build a mock OpenAI response with a proper tool_calls array."""
+    tc = MagicMock()
+    tc.function.name = name
+    tc.function.arguments = arguments_json
+    message = MagicMock()
+    message.tool_calls = [tc]
+    message.content = None
+    choice = MagicMock()
+    choice.message = message
+    choice.finish_reason = "tool_calls"
+    resp = MagicMock()
+    resp.choices = [choice]
+    return resp
+
+
+def _mock_text_response(content: str):
+    """Build a mock OpenAI response with text content (no tool_calls)."""
+    message = MagicMock()
+    message.tool_calls = None
+    message.content = content
+    choice = MagicMock()
+    choice.message = message
+    choice.finish_reason = "stop"
+    resp = MagicMock()
+    resp.choices = [choice]
+    return resp
+
+
+def _mock_empty_response():
+    """Build a mock OpenAI response with no choices."""
+    resp = MagicMock()
+    resp.choices = []
+    return resp
+
+
+class TestStructuredCompleteOpenAI:
+    """Unit tests for OpenAICompatibleLLM.structured_complete (Spec 18)."""
+
+    def test_tool_format_and_no_tool_choice(self):
+        """Verify OpenAI-format tools, no tool_choice (DeepSeek thinking compat)."""
+        llm = _make_mock_openai_llm()
+        result_json = '{"found": true, "cells": {"A1": {"value": 100, "denom": "mn", "unit": "USD"}}}'
+        llm._client.chat.completions.create.return_value = _mock_tool_call_response(result_json)
+
+        with patch("src.harness.trace.get_current_trace", return_value=None):
+            result = llm.structured_complete(
+                prompt="test prompt",
+                schema={"type": "object", "properties": {}},
+                label="test",
+            )
+
+        call_kwargs = llm._client.chat.completions.create.call_args[1]
+
+        # tool_choice must NOT be present (DeepSeek V4 Pro has server-side
+        # thinking always-on, incompatible with tool_choice)
+        assert "tool_choice" not in call_kwargs
+
+        # tools must be OpenAI format (type: function, function: {name, parameters})
+        assert call_kwargs["tools"][0]["type"] == "function"
+        assert "parameters" in call_kwargs["tools"][0]["function"]
+        assert "input_schema" not in call_kwargs["tools"][0]["function"]
+
+        # No extra_body (no thinking)
+        assert "extra_body" not in call_kwargs
+
+        assert result == {"found": True, "cells": {"A1": {"value": 100, "denom": "mn", "unit": "USD"}}}
+
+    def test_text_recovery(self):
+        """Tool-as-text: model returns JSON in content instead of tool_calls."""
+        llm = _make_mock_openai_llm()
+        text_content = 'Here is the result: {"found": true, "cells": {"B1": {"value": 5.78, "denom": "units", "unit": "USD"}}}'
+        llm._client.chat.completions.create.return_value = _mock_text_response(text_content)
+
+        with patch("src.harness.trace.get_current_trace", return_value=None):
+            result = llm.structured_complete(
+                prompt="test prompt",
+                schema={"type": "object", "properties": {}},
+                label="test",
+            )
+
+        assert result["found"] is True
+        assert result["cells"]["B1"]["value"] == 5.78
+
+    def test_text_recovery_nested_braces(self):
+        """Tool-as-text with nested JSON objects (cells map)."""
+        llm = _make_mock_openai_llm()
+        nested = '{"cells": {"A1": {"value": 17163, "denom": "mn", "unit": "USD"}, "A5": {"value": 242.07, "denom": "units", "unit": "USD"}}}'
+        llm._client.chat.completions.create.return_value = _mock_text_response(nested)
+
+        with patch("src.harness.trace.get_current_trace", return_value=None):
+            result = llm.structured_complete(
+                prompt="test prompt",
+                schema={"type": "object", "properties": {}},
+            )
+
+        assert result["cells"]["A1"]["value"] == 17163
+        assert result["cells"]["A5"]["denom"] == "units"
+
+    def test_retry_on_bad_json(self):
+        """Invalid JSON in tool_calls triggers retry, second attempt succeeds."""
+        llm = _make_mock_openai_llm()
+
+        bad_resp = _mock_tool_call_response("not valid json {{{")
+        good_resp = _mock_tool_call_response('{"cells": {}}')
+
+        llm._client.chat.completions.create.side_effect = [bad_resp, good_resp]
+
+        with patch("src.harness.trace.get_current_trace", return_value=None):
+            result = llm.structured_complete(
+                prompt="test prompt",
+                schema={"type": "object", "properties": {}},
+            )
+
+        assert result == {"cells": {}}
+        assert llm._client.chat.completions.create.call_count == 2
+
+    def test_all_retries_exhausted(self):
+        """All 3 attempts fail → ValueError raised."""
+        llm = _make_mock_openai_llm()
+        llm._client.chat.completions.create.return_value = _mock_empty_response()
+
+        with patch("src.harness.trace.get_current_trace", return_value=None):
+            with pytest.raises(ValueError, match="no valid tool call after 3 attempts"):
+                llm.structured_complete(
+                    prompt="test prompt",
+                    schema={"type": "object", "properties": {}},
+                )
+
+        assert llm._client.chat.completions.create.call_count == 3
+
+    def test_no_thinking_even_if_profile_has_thinking(self):
+        """structured_complete must NOT pass extra_body even if thinking=True."""
+        with patch("src.scripts.llm.OpenAI"):
+            llm = OpenAICompatibleLLM(
+                model="deepseek-v4-pro",
+                api_key="test-key",
+                base_url="https://api.deepseek.com/v1",
+                temperature=0.0,
+                max_tokens=3000,
+                thinking=True,  # profile has thinking
+            )
+        llm._client = MagicMock()
+        llm._client.chat.completions.create.return_value = _mock_tool_call_response('{"cells": {}}')
+
+        with patch("src.harness.trace.get_current_trace", return_value=None):
+            llm.structured_complete(
+                prompt="test",
+                schema={"type": "object", "properties": {}},
+            )
+
+        call_kwargs = llm._client.chat.completions.create.call_args[1]
+        assert "extra_body" not in call_kwargs
+
+    def test_system_prompt_passed(self):
+        """System prompt included as first message."""
+        llm = _make_mock_openai_llm()
+        llm._client.chat.completions.create.return_value = _mock_tool_call_response('{"cells": {}}')
+
+        with patch("src.harness.trace.get_current_trace", return_value=None):
+            llm.structured_complete(
+                prompt="extract this",
+                schema={"type": "object", "properties": {}},
+                system_prompt="You are an extractor.",
+            )
+
+        call_kwargs = llm._client.chat.completions.create.call_args[1]
+        messages = call_kwargs["messages"]
+        assert messages[0] == {"role": "system", "content": "You are an extractor."}
+        assert messages[1] == {"role": "user", "content": "extract this"}
+
+
+# =====================================================================
+# Spec 18: Cell-value shape guard in _run_single_leng
+# =====================================================================
+
+
+class TestLengCellValueShapeGuard:
+    """Tests that _run_single_leng rejects flat cell values."""
+
+    def test_flat_values_rejected(self):
+        """Cells like {"A1": 17163} instead of {"A1": {"value": ...}} → retry."""
+        from src.scripts.PMS2.leng_caller import _run_single_leng
+
+        mock_backend = MagicMock()
+        # First call: flat values (malformed)
+        # Second call: proper structure
+        mock_backend.structured_complete.side_effect = [
+            {"cells": {"A1": 17163}},  # flat value — bad
+            {"cells": {"A1": {"value": 17163, "denom": "mn", "unit": "USD"}}},  # good
+        ]
+
+        nid, result = _run_single_leng(
+            chunk_text="test chunk",
+            node_id="test-node",
+            cell_descriptions="test cells",
+            fiscal_calendar_text="",
+            firm="TEST",
+            backend=mock_backend,
+            sys_prompt="test prompt",
+        )
+
+        # Should have retried
+        assert mock_backend.structured_complete.call_count == 2
+        assert result["cells"]["A1"]["value"] == 17163
+
+    def test_empty_cells_passes(self):
+        """Empty cells dict {} should pass (valid — no hits)."""
+        from src.scripts.PMS2.leng_caller import _run_single_leng
+
+        mock_backend = MagicMock()
+        mock_backend.structured_complete.return_value = {"cells": {}}
+
+        nid, result = _run_single_leng(
+            chunk_text="test chunk",
+            node_id="test-node",
+            cell_descriptions="test cells",
+            fiscal_calendar_text="",
+            firm="TEST",
+            backend=mock_backend,
+            sys_prompt="test prompt",
+        )
+
+        assert mock_backend.structured_complete.call_count == 1
+        assert result["cells"] == {}
+
+    def test_all_retries_exhausted_malformed(self):
+        """All retries return flat values → _malformed_cells=True."""
+        from src.scripts.PMS2.leng_caller import _run_single_leng
+
+        mock_backend = MagicMock()
+        # All 3 attempts return flat values
+        mock_backend.structured_complete.return_value = {"cells": {"A1": 100}}
+
+        nid, result = _run_single_leng(
+            chunk_text="test chunk",
+            node_id="test-node",
+            cell_descriptions="test cells",
+            fiscal_calendar_text="",
+            firm="TEST",
+            backend=mock_backend,
+            sys_prompt="test prompt",
+        )
+
+        assert mock_backend.structured_complete.call_count == 3  # 1 + 2 retries
+        assert result.get("_malformed_cells") is True
+        assert result["cells"] == {}

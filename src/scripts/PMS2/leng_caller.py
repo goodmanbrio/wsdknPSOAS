@@ -11,7 +11,7 @@ from pathlib import Path
 import threading
 
 from src.harness.sysprompts import load_sysprompt
-from src.harness.terminal_router import ToolChannel
+from src.harness.terminal_router import ToolChannel, register
 from src.harness.trace import (
     TraceBuffer,
     set_current_trace,
@@ -124,6 +124,9 @@ def _run_single_leng(
         )
         cells = result.get("cells", {})
         if isinstance(cells, dict):
+            valid = all(isinstance(v, dict) and "value" in v for v in cells.values())
+            if not valid:
+                continue  # retry (malformed cell values)
             return node_id, result
         # Malformed — retry
 
@@ -179,6 +182,8 @@ def run_leng_caller(
 
     Returns "complete".
     """
+    leng_ch = register(f"PMS2-leng-{firm}")
+    val_ch = register(f"PMS2-val-{firm}")
     trace = TraceBuffer(f"PMS2-lv-{firm}")
     set_current_trace(trace)
 
@@ -219,9 +224,8 @@ def run_leng_caller(
         for file_path, cells in plan_entry_cells.items():
             fpi_entry = file_path_index.get(file_path)
             if fpi_entry is None:
-                channel.print(
-                    f"[LengCaller {firm}] file_path_index miss: "
-                    f"{file_path} — skipping (stale index?)"
+                leng_ch.print(
+                    f"file_path_index miss: {file_path} — skipping"
                 )
                 continue
 
@@ -232,9 +236,7 @@ def run_leng_caller(
                     doc = docstore.get_document(nid)
                     chunks.append((nid, doc))
                 except Exception:
-                    channel.print(
-                        f"[LengCaller {firm}] docstore miss: {nid}"
-                    )
+                    leng_ch.print(f"docstore miss: {nid}")
 
             # Sort by chunk_index
             chunks.sort(
@@ -247,8 +249,8 @@ def run_leng_caller(
                 leng_tasks.append((file_path, nid, doc.text, cells, cell_desc))
 
         if not leng_tasks:
-            channel.print(
-                f"[LengCaller {firm}] no chunks to process "
+            leng_ch.print(
+                f"no chunks to process "
                 f"({len(plan)} plan entries, all missed)."
             )
             # Still update searched_files
@@ -262,8 +264,8 @@ def run_leng_caller(
                     }
             return "complete"
 
-        channel.print(
-            f"[LengCaller {firm}] {len(leng_tasks)} chunks across "
+        leng_ch.print(
+            f"{len(leng_tasks)} chunks across "
             f"{len(plan_entry_cells)} files. Firing Lengs..."
         )
 
@@ -287,7 +289,7 @@ def run_leng_caller(
                     _, leng_output = fut.result()
                     leng_results.append((fp, nid, chunk_text, cells, leng_output))
                 except Exception as e:
-                    channel.print(f"⚠ Leng chunk {nid} crashed: {e}")
+                    leng_ch.print(f"⚠ Leng chunk {nid} crashed: {e}")
                     leng_errors_by_file[fp].append(f"{nid}: {e}")
 
         # ── STEP 3: Validator per hit (parallel) ────────────────────
@@ -330,8 +332,8 @@ def run_leng_caller(
                 if filtered:
                     hits.append((fp, nid, chunk_text, cells, filtered))
 
-        channel.print(
-            f"[LengCaller {firm}] {len(hits)} hits from "
+        leng_ch.print(
+            f"{len(hits)} hits from "
             f"{len(leng_results)} Leng calls. Spawning Validators..."
         )
 
@@ -366,7 +368,7 @@ def run_leng_caller(
                             elif out == "rejected" and reason:
                                 this_run_rejections[file_path][cid] = reason
                     except Exception as e:
-                        channel.print(f"⚠ Validator crashed: {e}")
+                        val_ch.print(f"⚠ crashed: {e}")
 
         # ── STEP 4: Update searched_files ───────────────────────────
         for fp, cells in plan_entry_cells.items():
@@ -394,8 +396,8 @@ def run_leng_caller(
 
         total_found = sum(len(v) for v in this_run_found.values())
         total_rejected = sum(len(v) for v in this_run_rejections.values())
-        channel.print(
-            f"[LengCaller {firm}] done: {total_found} cells found, "
+        leng_ch.print(
+            f"done: {total_found} cells found, "
             f"{total_rejected} rejected."
         )
 

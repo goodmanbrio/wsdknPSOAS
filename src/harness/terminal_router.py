@@ -13,6 +13,7 @@ Usage:
 
 from __future__ import annotations
 
+import re
 import threading
 from dataclasses import dataclass, field
 from queue import Queue
@@ -21,7 +22,76 @@ from rich.console import Console, Group
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.status import Status
+from rich.table import Table
 from rich.text import Text
+
+
+def _is_table_line(line: str) -> bool:
+    stripped = line.strip()
+    return stripped.startswith("|") and stripped.endswith("|")
+
+
+def _is_separator(line: str) -> bool:
+    return bool(re.match(r"^\s*\|[\s\-:|]+\|$", line))
+
+
+def _pipe_table_to_rich(lines: list[str]) -> Table:
+    """Convert pipe-table lines to a rich.Table."""
+    def parse_row(line: str) -> list[str]:
+        return [c.strip() for c in line.strip().strip("|").split("|")]
+
+    header = parse_row(lines[0])
+    table = Table(show_header=True, show_edge=True, pad_edge=True, show_lines=True)
+    for col in header:
+        table.add_column(col)
+
+    for line in lines[1:]:
+        if _is_separator(line):
+            continue
+        cells = parse_row(line)
+        # Pad/truncate to match header width
+        while len(cells) < len(header):
+            cells.append("")
+        table.add_row(*[Markdown(c) for c in cells[:len(header)]])
+
+    return table
+
+
+def _render_md(text: str) -> Group:
+    """Parse text into a Group of Markdown blocks and rich.Table objects.
+    Rich 13.x does not support GFM pipe tables, so we extract them manually."""
+    lines = text.split("\n")
+    segments: list = []
+    md_buf: list[str] = []
+    table_buf: list[str] = []
+
+    def flush_md():
+        chunk = "\n".join(md_buf).strip()
+        if chunk:
+            # Hard-break: trailing two spaces before each \n
+            chunk = chunk.replace("\n", "  \n")
+            segments.append(Markdown(chunk))
+        md_buf.clear()
+
+    def flush_table():
+        if table_buf:
+            segments.append(_pipe_table_to_rich(table_buf))
+        table_buf.clear()
+
+    for line in lines:
+        if _is_table_line(line):
+            if not table_buf:
+                flush_md()
+            table_buf.append(line)
+        else:
+            if table_buf:
+                flush_table()
+            md_buf.append(line)
+
+    flush_table()
+    flush_md()
+
+    return Group(*segments)
 
 
 # ── Console singleton ─────────────────────────────────────────────────
@@ -43,13 +113,26 @@ LABEL_STYLES = {
     "S2C":          "bold magenta",
     "PUMBA":        "bold red",
     "PMS2":         "bold blue",
+    "PMS2-disp":    "bold blue",
+    "PMS2-map":     "bold deep_sky_blue1",
+    "PMS2-leng":    "bold dark_orange",
+    "PMS2-val":     "bold medium_purple1",
+    "PMS2-fiscal":  "bold chartreuse3",
+    "PMS2-merge":   "bold salmon1",
 }
 
 
 def _style_for(label: str) -> str:
-    """Look up style by label prefix. 'PMS1-Best Buy' → 'PMS1' → green."""
-    prefix = label.split("-")[0]
-    return LABEL_STYLES.get(prefix, "bold white")
+    """Look up style by longest prefix match.
+
+    'PMS2-leng-Apple' tries: 'PMS2-leng-Apple', 'PMS2-leng', 'PMS2'.
+    """
+    parts = label.split("-")
+    for i in range(len(parts), 0, -1):
+        candidate = "-".join(parts[:i])
+        if candidate in LABEL_STYLES:
+            return LABEL_STYLES[candidate]
+    return "bold white"
 
 
 # ── AnswerSlot ────────────────────────────────────────────────────────
@@ -175,7 +258,7 @@ class TerminalRouter:
             style = _style_for(label)
             if md:
                 label_text = Text(f"[{label}]", style=style)
-                self._console.print(Group(label_text, Markdown(question)))
+                self._console.print(Group(label_text, _render_md(question)))
             else:
                 self._console.print(
                     f"\n[{style}]\\[{label}][/{style}] {question}"
@@ -224,11 +307,8 @@ class TerminalRouter:
         """Print one styled line. Caller must hold no lock OR hold _lock."""
         style = _style_for(label)
         if markdown:
-            # Trailing two spaces before \n = CommonMark hard break.
-            # Without this, Markdown() renders \n as a space (softbreak).
-            msg = msg.replace("\n", "  \n")
             label_text = Text(f"[{label}]", style=style)
-            self._console.print(Group(label_text, Markdown(msg)))
+            self._console.print(Group(label_text, _render_md(msg)))
         else:
             self._console.print(f"[{style}]\\[{label}][/{style}] {msg}")
 

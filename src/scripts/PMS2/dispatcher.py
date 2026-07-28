@@ -9,7 +9,7 @@ import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from src.harness.terminal_router import ToolChannel
+from src.harness.terminal_router import ToolChannel, register, _router
 from src.harness.trace import (
     TraceBuffer,
     set_current_trace,
@@ -121,6 +121,7 @@ def _resolve_fiscal_calendar(
     web_search) to parse user text into calendar dict.
     Returns None only if everything fails.
     """
+    fiscal_ch = register(f"PMS2-fiscal-{firm}")
     backend = get_pms2_fiscal_cal_llm(config)
 
     schema = {
@@ -156,6 +157,7 @@ def _resolve_fiscal_calendar(
 
     # --- Phase 1: web search (3 attempts) ---
     for attempt in range(_FISCAL_CAL_MAX_RETRIES):
+        _router.start_spinner(f"PMS2-fiscal-{firm}")
         try:
             result = backend.structured_complete(
                 prompt=web_prompt,
@@ -163,24 +165,24 @@ def _resolve_fiscal_calendar(
                 label=f"PMS2-fiscal-{firm}",
                 web_search=True,
             )
-            calendar = result.get("calendar", {})
-            if calendar:
-                channel.print(
-                    f"[PMS2-fiscal-{firm}] FY ends "
-                    f"{result.get('fy_end_month_day', '?')}. "
-                    f"Calendar: {len(calendar)} periods resolved."
-                )
-                return calendar
         except Exception:
-            pass
-        channel.print(
-            f"[PMS2-fiscal-{firm}] attempt {attempt + 1}/"
-            f"{_FISCAL_CAL_MAX_RETRIES} failed"
+            result = {}
+        finally:
+            _router.stop_spinner()
+        calendar = result.get("calendar", {})
+        if calendar:
+            fiscal_ch.print(
+                f"FY ends {result.get('fy_end_month_day', '?')}. "
+                f"{len(calendar)} periods resolved."
+            )
+            return calendar
+        fiscal_ch.print(
+            f"attempt {attempt + 1}/{_FISCAL_CAL_MAX_RETRIES} failed"
         )
 
     # --- Phase 2: ask user fallback ---
-    user_text = channel.input(
-        f"[PMS2-fiscal-{firm}] fiscal cal resolver broken atm. "
+    user_text = fiscal_ch.input(
+        f"fiscal cal resolver broken atm. "
         f"what is the calendar equivalent of {firm}'s fiscal "
         f"years/halves/quarters?"
     )
@@ -192,6 +194,7 @@ def _resolve_fiscal_calendar(
         + "\n".join(f"  {p}" for p in periods)
     )
 
+    _router.start_spinner(f"PMS2-fiscal-{firm}")
     try:
         result = backend.structured_complete(
             prompt=parse_prompt,
@@ -199,20 +202,21 @@ def _resolve_fiscal_calendar(
             label=f"PMS2-fiscal-{firm}-user",
             web_search=False,
         )
-        calendar = result.get("calendar", {})
-        if calendar:
-            channel.print(
-                f"[PMS2-fiscal-{firm}] parsed from user input. "
-                f"{len(calendar)} periods resolved."
-            )
-            return calendar
     except Exception:
-        pass
+        result = {}
+    finally:
+        _router.stop_spinner()
+    calendar = result.get("calendar", {})
+    if calendar:
+        fiscal_ch.print(
+            f"parsed from user input. {len(calendar)} periods resolved."
+        )
+        return calendar
 
     # --- Total failure ---
-    channel.print(
-        f"[PMS2-fiscal-{firm}] fiscalcalresolver shat the bed. "
-        f"forcing onward with no fiscal cal dict"
+    fiscal_ch.print(
+        "fiscalcalresolver shat the bed. "
+        "forcing onward with no fiscal cal dict"
     )
     return None
 
@@ -295,9 +299,9 @@ def run_dispatcher(
 
             # Step 3: call Batch Planner (agent loop)
             channel.print(
-                f"Dispatcher [{firm}] iter {state.iteration}: "
-                f"{len(null_ans_cells)} null ans cells, "
-                f"{len(active_cells)} active cells"
+                f"iter {state.iteration}: "
+                f"{len(null_ans_cells)} null ans, "
+                f"{len(active_cells)} active"
             )
 
             bp_result = run_batch_planner(
@@ -355,7 +359,7 @@ def run_dispatcher(
 
         job_stencil["status"] = state.status
         channel.print(
-            f"Dispatcher [{firm}] done: {state.status} "
+            f"done: {state.status} "
             f"after {state.iteration + 1} iteration(s)"
         )
         return job_stencil

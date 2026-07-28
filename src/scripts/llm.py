@@ -167,7 +167,7 @@ class LLMBackend(ABC):
         """Return structured JSON matching schema. Override in backends."""
         raise NotImplementedError(
             f"{type(self).__name__} does not support structured_complete. "
-            f"Only AnthropicLLM implements this for PMS2."
+            f"Override in AnthropicLLM or OpenAICompatibleLLM."
         )
 
 
@@ -433,6 +433,110 @@ class OpenAICompatibleLLM(LLMBackend):
             text=text,
             tool_calls=tool_calls,
             raw_content=raw_content,
+        )
+
+    # ── Structured complete (Leng extraction) ──────────────────────────
+
+    _STRUCTURED_MAX_RETRIES = 3  # 3 attempts total (2 retries)
+
+    def structured_complete(
+        self, prompt, schema, system_prompt=None, label="",
+        web_search=False,
+    ) -> dict:
+        """Structured JSON via tool-call shim (OpenAI-compatible).
+
+        No thinking — extraction call. web_search silently ignored.
+
+        NOTE: tool_choice forcing omitted. DeepSeek V4 Pro has
+        server-side thinking always-on, which is incompatible with
+        tool_choice. The model reliably calls the tool without forcing
+        when a single tool is provided. The retry loop + text-recovery
+        handle the ~11% tool-as-text failure rate.
+        """
+        tool = {
+            "type": "function",
+            "function": {
+                "name": "structured_output",
+                "description": "Return structured data matching schema",
+                "parameters": schema,
+            },
+        }
+
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+
+        for attempt in range(self._STRUCTURED_MAX_RETRIES):
+            kwargs = {
+                "model": self._model,
+                "messages": messages,
+                "tools": [tool],
+                "temperature": self._temperature,
+                "max_tokens": self._max_tokens,
+            }
+
+            resp = self._client.chat.completions.create(**kwargs)
+
+            if not resp.choices:
+                continue
+
+            message = resp.choices[0].message
+
+            # Happy path: tool_calls array present
+            if message.tool_calls:
+                for tc in message.tool_calls:
+                    if tc.function.name == "structured_output":
+                        try:
+                            result = json.loads(tc.function.arguments)
+                        except (json.JSONDecodeError, TypeError):
+                            break  # retry
+                        from src.harness.trace import get_current_trace
+                        trace = get_current_trace()
+                        if trace:
+                            trace.record_llm_call(
+                                messages=[{"role": "user", "content": prompt}],
+                                response=json.dumps(result),
+                                model=self._model,
+                                label=label,
+                            )
+                        return result
+
+            # Failure mode: tool-as-text (DeepSeek V4 Pro ~11%).
+            content = message.content or ""
+            if "structured_output" in content or "{" in content:
+                try:
+                    start = content.index("{")
+                    depth = 0
+                    end = len(content) - 1
+                    for i, c in enumerate(content[start:], start):
+                        if c == "{":
+                            depth += 1
+                        elif c == "}":
+                            depth -= 1
+                        if depth == 0:
+                            end = i
+                            break
+                    json_str = content[start:end + 1]
+                    result = json.loads(json_str)
+                    if isinstance(result, dict):
+                        from src.harness.trace import get_current_trace
+                        trace = get_current_trace()
+                        if trace:
+                            trace.record_llm_call(
+                                messages=[{"role": "user", "content": prompt}],
+                                response=json.dumps(result),
+                                model=self._model,
+                                label=f"{label}:text-recovery",
+                            )
+                        return result
+                except (json.JSONDecodeError, ValueError):
+                    pass  # retry
+
+        raise ValueError(
+            f"structured_complete: no valid tool call after "
+            f"{self._STRUCTURED_MAX_RETRIES} attempts "
+            f"(model: {self._model})"
         )
 
 

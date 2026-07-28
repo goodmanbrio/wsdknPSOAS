@@ -113,3 +113,47 @@ Same first-write-wins problem as Demo 1. Multiple sources have
 different EPS figures for the same period label. Q2 EPS = 7.54
 is likely an annual/YTD figure, not a single quarter. First
 validated write wins regardless.
+
+---
+
+## Bug: LLM-only confirmation gate (no code-level enforcement)
+
+Date: 2026-07-27
+Scope: Sekei (PMS2), but pattern exists anywhere an LLM `ask_user`
+result gates a subsequent action (PTECA, orchestrator, etc.)
+
+### Symptom
+
+Pipeline advances to Phase 1 (dispatchers) before user finishes
+typing their answer to the stencil confirmation prompt. The LLM
+calls `finalize_stencil` without the user having said "y".
+
+### Root cause
+
+The sekei loop feeds `ask_user` answers to the LLM as
+`"User answered: {answer}"` and trusts the LLM to only call
+`finalize_stencil` if the answer is affirmative. No code-level
+gate exists. If the LLM misreads, hallucinates, or ignores the
+answer, `finalize_stencil` runs unconditionally.
+
+`_handle_finalize` has no confirmation step of its own — it
+validates, saves, and returns immediately.
+
+### Bandaid fix (sekei_loop.py only)
+
+Added `user_confirmed` flag in `run_sekei`. After each `ask_user`,
+flag is set `True` only if answer matches `y/yes/ok/confirm/lgtm`.
+Before `finalize_stencil` dispatches, if `user_confirmed` is
+`False`, Python hard-prompts the user directly ("Finalize stencil?
+[y/n]") and rejects if they say no. LLM cannot bypass this.
+
+### Not yet fixed elsewhere
+
+The same pattern (LLM-only gate on user confirmation) exists in:
+- PTECA clarification flow (`tool_pteca.py`)
+- Orchestrator `ask_user` tool (`execute_tool.py` / `agent_loop.py`)
+- Any agent loop that relies on the LLM to respect a "only proceed
+  after user says yes" sysprompt instruction
+
+Each of these needs a similar code-level gate if the action after
+`ask_user` is destructive or non-reversible.

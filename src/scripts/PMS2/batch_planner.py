@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from src.harness.sysprompts import load_sysprompt
-from src.harness.terminal_router import ToolChannel
+from src.harness.terminal_router import ToolChannel, _router
 from src.harness.trace import (
     TraceBuffer,
     set_current_trace,
@@ -309,13 +309,16 @@ def run_batch_planner(
 
     try:
         while turn_counter < _MAX_TURNS:
-            channel.print(f"BP [{firm}] iter {iteration} thinking...")
-            response = backend.call_with_tools(
-                messages=messages,
-                system_prompt=sys_prompt,
-                tools=BATCH_PLANNER_TOOLS,
-                label=f"PMS2-bp-{firm}-#{iteration}",
-            )
+            _router.start_spinner(f"PMS2-disp-{firm}")
+            try:
+                response = backend.call_with_tools(
+                    messages=messages,
+                    system_prompt=sys_prompt,
+                    tools=BATCH_PLANNER_TOOLS,
+                    label=f"PMS2-bp-{firm}-#{iteration}",
+                )
+            finally:
+                _router.stop_spinner()
 
             # end_turn without tool call = error
             if response.stop_reason == "end_turn":
@@ -384,9 +387,7 @@ def run_batch_planner(
                             "in the same turn."
                         ), None
                     reason = tc.input.get("reason", "")
-                    channel.print(
-                        f"BP [{firm}] exhausted: {reason}"
-                    )
+                    channel.print(f"exhausted: {reason}")
                     return tc, f"Exhausted: {reason}", "exhausted"
 
                 elif tc.name == "override_firm_currency":
@@ -436,7 +437,7 @@ def run_batch_planner(
 
         # MAX_TURNS exhausted — treat as exhausted
         channel.print(
-            f"BP [{firm}] iter {iteration}: "
+            f"iter {iteration}: "
             f"exhausted {_MAX_TURNS} turns without terminal tool."
         )
         return "exhausted"

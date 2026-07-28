@@ -128,6 +128,31 @@ deepseek_v4flash_leng:
   temperature: 0.0
   max_tokens: 3000        # PUMBA Leng screening: short yes/no responses
 
+# ── DeepSeek V4 for PMS2 Leng/Validator ──────────────────────────────
+
+deepseek_v4pro_leng:
+  provider: deepseek
+  model: deepseek-v4-pro
+  temperature: 0.0         # deterministic extraction
+  thinking: false           # no thinking for cheap extraction
+  max_tokens: 3000          # Leng output is small (found + cells map)
+
+deepseek_v4pro_validator:
+  provider: deepseek
+  model: deepseek-v4-pro
+  temperature: 0.0
+  thinking: true            # Validator needs judgment (cross-ref chunk vs claim)
+  max_tokens: 5000          # thinking (~2.5k) + verdicts (~800-1.5k). DeepSeek
+                            # thinking tokens count toward max_tokens (unlike
+                            # Anthropic). 4000 risks cutoff on high-cell hits.
+
+deepseek_v4flash_validator:
+  provider: deepseek
+  model: deepseek-v4-flash
+  temperature: 0.0
+  thinking: false
+  max_tokens: 3000
+
 # ── Legacy aliases (updated to V4 Flash — deepseek-chat retires 2026-07-24) ──
 
 deepseek_chattemp0:

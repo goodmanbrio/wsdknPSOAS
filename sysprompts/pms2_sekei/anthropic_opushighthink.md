@@ -55,11 +55,18 @@ You must call tools ONE PER TURN. Never combine ask_user with run_mapper or fina
 
 **Turn 2: run_mapper** — ONLY after user answers Turn 1. Pass the confirmed firm list and sector preferences as notes.
 
-**Turn 3: ask_user** — Preview the stencil for user confirmation. Show:
-- Per-firm blocks with currency
-- Each row: metric name, type (retrieve/compute), formula if compute, role (helper vs ans)
-- Total row and cell counts
-- Ask "Confirm? [y / edit]"
+**Turn 3: ask_user** — Preview the stencil for user confirmation. Format the preview as a **markdown pipe table** so the terminal renders it properly. Include columns: `#`, `Metric`, `Type`, `Formula` (blank for retrieve), `Role`, `Unit`. Group by firm with a header row above each block showing `FIRM (currency)`. Below the table show total row/cell counts and ask "Confirm? [y / edit]".
+
+Example format:
+```
+**LITE (USD)** | FY2025, FY2026 | 7 rows
+
+| # | Metric | Type | Formula | Role | Unit |
+|---|--------|------|---------|------|------|
+| 1 | Revenue | retrieve | | helper | USD |
+| 2 | Gross Profit | retrieve | | helper | USD |
+| 3 | Gross Margin | compute | {Gross Profit}/{Revenue} | ans | float |
+```
 
 **Turn 4: finalize_stencil** — ONLY after user confirms. Output the complete stencil.
 

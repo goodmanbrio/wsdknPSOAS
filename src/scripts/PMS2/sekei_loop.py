@@ -6,13 +6,14 @@ M3a: run_mapper stores inventories as opaque handles via registry.
 """
 
 import json
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from src.harness.opaque_registry import registry
 from src.harness.sysprompts import load_sysprompt
 from src.harness import terminal_router
-from src.harness.terminal_router import ToolChannel
+from src.harness.terminal_router import ToolChannel, _router
 from src.harness.trace import (
     TraceBuffer,
     set_current_trace,
@@ -202,6 +203,8 @@ def run_sekei(
     # Mutable closure state — run_mapper handler writes, finalize reads
     file_inventories: dict[str, list[dict]] = {}
     pipeline_firms = firms
+    # Hard gate: LLM must not finalize until user explicitly confirms
+    user_confirmed = False
 
     # Trace
     trace = TraceBuffer("PMS2-sekei")
@@ -212,13 +215,20 @@ def run_sekei(
 
     try:
         while turn_counter < _MAX_TURNS:
-            channel.print("Sekei thinking...")
-            response = backend.call_with_tools(
-                messages=messages,
-                system_prompt=sys_prompt,
-                tools=SEKEI_TOOLS,
-                label="PMS2-sekei",
-            )
+            _router.start_spinner("PMS2")
+            try:
+                response = backend.call_with_tools(
+                    messages=messages,
+                    system_prompt=sys_prompt,
+                    tools=SEKEI_TOOLS,
+                    label="PMS2-sekei",
+                )
+            finally:
+                _router.stop_spinner()
+
+            # Print LLM text (stencil previews, explanations, etc.)
+            if response.text and response.text.strip():
+                channel.print(response.text, markdown=True)
 
             # end_turn without tool call = error
             if response.stop_reason == "end_turn":
@@ -247,11 +257,18 @@ def run_sekei(
             )
 
             def _dispatch_tc(tc):
+                nonlocal user_confirmed
+
                 if tc.name == "ask_user":
                     answer = channel.input(tc.input["question"], markdown=True)
                     trace.record_user_interaction(
                         tc.input["question"], answer
                     )
+                    # Set confirmation flag if answer looks affirmative
+                    if re.match(r"^\s*(y|yes|ok|confirm|lgtm)\b", answer, re.I):
+                        user_confirmed = True
+                    else:
+                        user_confirmed = False
                     return tc, f"User answered: {answer}", None
 
                 elif tc.name == "finalize_stencil":
@@ -268,6 +285,18 @@ def run_sekei(
                             "Error: cannot call multiple terminal tools "
                             "in the same turn."
                         ), None
+
+                    # Hard gate: user must have confirmed via ask_user
+                    if not user_confirmed:
+                        ans = channel.input(
+                            "Finalize stencil? [y/n]"
+                        ).strip().lower()
+                        if not ans.startswith("y"):
+                            return tc, (
+                                "Error: user rejected finalization. "
+                                "Call ask_user to show the stencil and "
+                                "get confirmation before retrying."
+                            ), None
 
                     data, status = _handle_finalize(
                         tc.input, pipeline_firms, expanded_periods,
@@ -406,10 +435,10 @@ def _handle_run_mapper(
                 firm_name, inventory = fut.result()
                 results[firm_name] = inventory
                 channel.print(
-                    f"Mapper [{firm_name}]: {len(inventory)} files catalogued."
+                    f"Mapper {firm_name}: {len(inventory)} files catalogued."
                 )
             except Exception as e:
-                channel.print(f"Mapper [{firm}] failed: {e}")
+                channel.print(f"Mapper {firm} failed: {e}")
                 results[firm] = []
 
     return results
