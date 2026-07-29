@@ -2,9 +2,9 @@
 
 ## Frontmatter
 - Write date: 20260728
-- Update date:
+- Update date: 20260728
 - Codebase last changed date: 20260728
-- Implemented Y/N: N
+- Implemented Y/N: Y
 - During PMS2 Phase 1, user sees a dead terminal for minutes
   while hundreds of Leng/Validator calls run in parallel. Batch
   Planner reasoning is invisible. No spinners during Leng or
@@ -549,6 +549,11 @@ executor runs → counters tick → spinner stops. The target UX
 diagram shows spinner before "Firing Lengs" but that's a
 diagram artifact — the spinner appears as a live overlay;
 what matters is it's active during the 30-120s executor wait.
+
+`start_spinner` is called BEFORE `with ThreadPoolExecutor`, and
+`stop_spinner` is in `finally` wrapping the entire executor block
+(both submit loop and `as_completed` loop). This ensures spinner
+stops even if submit throws, no spinner leak possible.
 
 Use `channel` (the dispatcher-level ToolChannel passed into
 `run_leng_caller`), NOT `leng_ch`. This prints with label

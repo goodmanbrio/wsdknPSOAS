@@ -12,8 +12,7 @@
   wrong (wrong metric names, wrong decompositions), no feedback
   path exists back to Sekei to revise the schema while
   preserving already-extracted values — this spec addresses
-  that too. Problems 1, 3, 4 (Leng quality, FiscalCalResolver,
-  charting alignment) remain in Spec 20b.
+  that too. 
 
 ## Problem space
 
