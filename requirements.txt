@@ -8,6 +8,7 @@ openai>=1.0                   # llm.py OpenAI-compat backend
 llama-index-core>=0.11.0
 llama-index-embeddings-huggingface>=0.3.0
 PyMuPDF>=1.24.0               # fitz — PDF parsing in ingest.py
+rank-bm25>=0.2.2              # BM25Okapi — research module keyword retrieval
 
 # ── PMS2 ingest ───────────────────────────────────────────
 docling>=2.0                  # pdf/docx → markdown conversion
