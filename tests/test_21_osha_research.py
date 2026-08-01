@@ -90,6 +90,48 @@ def reset_research_singleton():
     r._retriever = None
 
 
+@pytest.fixture(autouse=True)
+def enforce_hard_rule():
+    """HARD RULE: no test may write to data/index/.
+
+    Snapshots the live index dir before each test and asserts no test
+    created, deleted, or modified anything in it.
+
+    Note this asserts the file was not *written by this test* — NOT that
+    bm25_index.pkl is absent. It is a legitimate build artifact: the first
+    real run_research call writes it (failure mode 9), so after any live use
+    of the harness it exists, gitignored, and that is correct. An
+    existence-only check would conflate production's artifact with a test
+    violation.
+
+    The spec proposes checking `git status` instead; that cannot work here,
+    since .gitignore:2 ignores data/ wholesale and the pickle would never
+    show up either way. This is the working equivalent.
+    """
+    from src.scripts.config import Config
+
+    index_dir = Config().pms2_index_dir
+
+    def snapshot():
+        return {
+            p.name: (p.stat().st_mtime_ns, p.stat().st_size)
+            for p in index_dir.iterdir() if p.is_file()
+        }
+
+    before = snapshot()
+    yield
+    after = snapshot()
+
+    assert after == before, (
+        f"HARD RULE violated: a test wrote to {index_dir}.\n"
+        f"  created:  {sorted(set(after) - set(before))}\n"
+        f"  deleted:  {sorted(set(before) - set(after))}\n"
+        f"  modified: {sorted(k for k in set(before) & set(after) if before[k] != after[k])}\n"
+        f"Build indexes under tmp_path instead. Delete any stray artifact; "
+        f"do not gitignore your way out."
+    )
+
+
 # ── The corpus — the copied module was written against a different one ──
 
 class TestCorpus:
@@ -156,6 +198,7 @@ class TestCorpus:
         Hardcoded sub-questions, so no LLM. The only test proving the
         corpus can actually answer a question.
         """
+        from src.scripts.config import Config
         from src.scripts.research.decomposer import SubQuestion
         from src.scripts.research.retriever import (
             RetrievedChunk,
@@ -185,17 +228,10 @@ class TestCorpus:
             assert c.text.strip(), f"empty text on {c.node_id}"
             assert c.score > 0.0
 
-        # HARD RULE: the build landed under tmp_path, not data/index/
+        # The build landed under tmp_path. That it did NOT touch the live
+        # data/index/ is enforced for every test by enforce_hard_rule.
         assert (live_corpus_config.pms2_index_dir / "bm25_index.pkl").exists()
-        assert not (Config_index_dir() / "bm25_index.pkl").exists(), (
-            "a test wrote bm25_index.pkl into the live data/index/ directory"
-        )
-
-
-def Config_index_dir():
-    """The real data/index/, for HARD RULE assertions."""
-    from src.scripts.config import Config
-    return Config().pms2_index_dir
+        assert live_corpus_config.pms2_index_dir != Config().pms2_index_dir
 
 
 # ── Index cache invalidation — where this class of code rots ──────────

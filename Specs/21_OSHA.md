@@ -2,7 +2,7 @@
 - Write date: 20260729
 - Update date: 20260801
 - Codebase last changed date: 20260801 (all line anchors below re-verified against HEAD 84c0290 on 20260801 — all accurate)
-- Implemented: N
+- Implemented: Y
 - Port `run_research` tool from wagasyanohimitunaLAG-osha branch into PSOAS_Jul20 harness. Research = open-ended QA via query decomposition -> BM25 retrieval -> cited synthesis. No plumbing changes at the tool-calling/tool-result contract level -- contracts are identical across both codebases. Mostly additive (new tool definition, new handler, new module, new config fields, new sysprompts) plus existing-file modifications (orchestrator sysprompt gets routing guidance). One deliberate behavioural divergence from the osha branch: `_exec_research` intercepts the module's empty-retrieval sentinels and surfaces them as `BUMMER retrieval empty` rather than storing them as an answer (F5, failure mode 10). The copied module itself stays verbatim.
 - Source branch path: `../wagasyanohimitunaLAG-osha` (sibling directory at same level as PSOAS_Jul20, i.e. `HVCPipeline/KTQuery/Omaya/wagasyanohimitunaLAG-osha`)
 
