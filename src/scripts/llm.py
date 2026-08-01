@@ -1181,3 +1181,15 @@ def get_pms2_leng_llm(config: Config) -> LLMBackend:
 def get_pms2_validator_llm(config: Config) -> LLMBackend:
     """PMS2 Validator LLM — per-chunk verdict (tool calling)."""
     return _get(config, "pms2_validator_profile")
+
+
+# ── Research factories ──────────────────────────────────────────────────
+
+def get_research_decomposer_llm(config: Config) -> LLMBackend:
+    """Research decomposer LLM — splits open-ended question into sub-questions."""
+    return _get(config, "research_decomposer_profile")
+
+
+def get_research_synthesizer_llm(config: Config) -> LLMBackend:
+    """Research synthesizer LLM — cites retrieved chunks into coherent answer."""
+    return _get(config, "research_synthesizer_profile")

@@ -82,6 +82,14 @@ class Config:
     pms2_leng_max_workers: int = 100                           # concurrent Leng structured_complete calls per firm
     pms2_validator_max_workers: int = 50                       # concurrent Validator agent loops per firm
 
+    # ── Research (open-ended QA) LLM role → profile mapping ──────────
+    research_decomposer_profile: str = "deepseek_v4flash_temp0"
+    research_synthesizer_profile: str = "deepseek_v4pro_highalloc"
+
+    # ── Research retrieval parameters ───────────────────────────────
+    research_bm25_top_k: int = 5
+    research_max_chunks: int = 20
+
     # ── Chart output ──────────────────────────────────────────────────
     output_dir: Path = field(default_factory=lambda: _PMS1_ROOT / "output")
     # chart_styles: list[str] = ...  # Future: override LovelyPlots styles
