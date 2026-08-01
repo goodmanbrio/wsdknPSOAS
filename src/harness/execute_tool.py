@@ -275,6 +275,51 @@ def _exec_pms2(params: dict) -> str:
     )
 
 
+# Both empty-result sentinels in the research module start with this.
+# Verified against the copied source:
+#   research/__init__.py:90  "**No relevant chunks found.** ..."
+#   research/synthesizer.py:45 "**No relevant documents found.** ..."
+_RESEARCH_EMPTY_PREFIX = "**No relevant "
+
+
+def _exec_research(params: dict) -> str:
+    from src.scripts.research import run_research_pipeline
+
+    if _session_dir is None:
+        return "Error: no active session (run_research called outside harness)."
+
+    question = params["question"]
+    channel = register("RESEARCH")
+
+    answer = run_research_pipeline(
+        question=question,
+        config=_config,
+        session_dir=_session_dir,
+        channel=channel,
+        debug_dir=_debug_dir,
+    )
+
+    if answer.startswith(_RESEARCH_EMPTY_PREFIX):
+        return (
+            "BUMMER retrieval empty — no documents matched this question. "
+            "No handle was stored and no file was written. Do not present "
+            "this as an answer; tell the user the corpus had nothing, or "
+            "retry with a more specific question.\n\n"
+            f"{answer}"
+        )
+
+    handle = registry.store(answer, f"Research: {question[:80]}")
+
+    safe_name = re.sub(r"[^\w\s\-]", "", question[:50]).strip().replace(" ", "_")
+    answer_path = _session_dir / f"research_{safe_name}.md"
+    answer_path.write_text(answer, encoding="utf-8")
+
+    return (
+        f"Research complete. Answer stored as {handle}. "
+        f"Saved to: {answer_path}\n\n{answer}"
+    )
+
+
 def _exec_inspect_var(params: dict) -> str:
     mode = params["mode"]
     if mode == "list":
@@ -301,6 +346,7 @@ def _exec_inspect_var(params: dict) -> str:
 _dispatch: dict[str, Callable] = {
     # "run_pms1":          _exec_pms1,  # PMS2 replaces PMS1. Code stays in tree.
     "run_pms2":          _exec_pms2,
+    "run_research":      _exec_research,
     "run_pteca":         _exec_pteca,
     "run_stencil2chart": _exec_stencil2chart,
     "ask_user":          _exec_ask_user,

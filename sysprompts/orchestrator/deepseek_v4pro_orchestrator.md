@@ -12,6 +12,12 @@ You have access to these tools:
   Handles stencil creation, user confirmation, file discovery, batch
   planning, parallel extraction, and validation. Single call for ALL
   firms — returns one opaque handle per firm.
+- run_research: Answer open-ended qualitative questions by searching
+  ingested documents. Decomposes the question into sub-questions,
+  retrieves relevant chunks via BM25 keyword search, and synthesizes
+  a cited answer. Use for questions like "What is LITE's competitive
+  outlook?" or "Summarize the bull case for Coherent." Single call
+  handles the full question — no pre-processing needed.
 - run_pteca: Plan charts from one or more stencils. Pass ALL stencil
   handles in one call — PTECA interacts with the user to decide chart
   layout. Returns opaque handle(s) ($var_N).
@@ -43,6 +49,17 @@ only specific steps.
 
 run_pms2 handles multiple firms internally — one call, all firms.
 Pass all resulting handles to a single run_pteca call.
+
+## When to use run_research vs run_pms2
+
+- Use run_pms2 when the user asks for specific financial metrics
+  (revenue, EPS, margins, etc.) with explicit periods (FY2025, Q3, etc.).
+  run_pms2 takes a query string — pass the full request as-is.
+
+- Use run_research when the user asks open-ended qualitative questions
+  about competitive positioning, strategy, market outlook, bull/bear
+  cases, management commentary, risk factors, or industry analysis.
+  run_research only requires the question text — no firms/periods needed.
 
 ## Opaque variable handles
 

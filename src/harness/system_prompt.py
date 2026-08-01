@@ -58,6 +58,34 @@ TOOL_DEFINITIONS = [
     #         "required": ["firm", "query"],
     #     },
     # },
+    # research (open-ended QA)
+    {
+        "name": "run_research",
+        "description": (
+            "Answer an open-ended qualitative question by searching ingested "
+            "documents. Decomposes the question into sub-questions, retrieves "
+            "relevant chunks via BM25 keyword search, and synthesizes a cited "
+            "answer. Use for questions like 'What is LITE's competitive "
+            "outlook?', 'Summarize the bull case for Coherent', or 'How does "
+            "Furukawa Electric view the optical fiber market?'. Do NOT use "
+            "for tabular data extraction — use run_pms2 for metrics like "
+            "revenue, EPS, margins with specific periods."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "question": {
+                    "type": "string",
+                    "description": (
+                        "The open-ended question to research. Pass the user's "
+                        "query as-is — the research pipeline handles "
+                        "decomposition internally."
+                    ),
+                },
+            },
+            "required": ["question"],
+        },
+    },
     # 07_tool_pteca
     {
         "name": "run_pteca",
