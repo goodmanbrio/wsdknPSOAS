@@ -13,10 +13,13 @@ Live financial data streams — prices, fundamentals, macro, news, filings, web 
 | **MaverickMCP** | MCP server (self-host) | none for core; EXA for research | Global (yfinance-backed) | `git clone` + `uv sync` |
 | **FinanceNews-MCP** | MCP server (self-host) | `FINNHUB_API_KEY` (free tier) | Global news | `npm install -g` |
 | **Stocklens** | MCP server (self-host) | none | Korea + US (Naver Finance + yfinance) | clone + install |
-| **edgartools** (`edgar` pip) | Python library | none | US SEC filings only | `pip install edgar` |
+| **EDGAR XBRL API** | REST API (free, no key) | none | US public filers — aggregate only; segment via R-files | `urllib` / `httpx`, `User-Agent` header required |
+| **edgartools** (`edgar` pip) | Python library | none | US SEC filings, wraps EDGAR | `pip install edgar` |
 | **Web search** (Serper/Bocha/Tavily) | HTTP calls | key per provider | Global / Chinese web | 10-line httpx call |
 | **Scrapling crawler** | Python library | none | Any URL (3-tier anti-bot) | `pip install scrapling[all]` |
 | **London Strategic Edge (LSE)** | REST API + WebSocket | single API key (free tier) | Global — 118k datasets, 27 asset classes | Medium — REST client, export job poller |
+| **defeatbeta-api** | Python library (DuckDB → HuggingFace) | none | US-listed only (~367 tickers with segment data) | `pip install defeatbeta-api` |
+| **Alpha Vantage** | REST API | `ALPHAVANTAGE_API_KEY` (free tier) | US-listed, some global | `pip install alpha-vantage` or raw httpx |
 
 ---
 
@@ -140,11 +143,44 @@ npm install -g financenews-mcp
 
 ---
 
-### G. SEC EDGAR direct (edgartools)
+### G. SEC EDGAR APIs + XBRL
 
-`pip install edgar` — no API key, no manual download. US public filers only.
+Two distinct layers:
 
-LangAlpha's `src/tools/sec/parsers/edgartools_parser.py` (~420 lines, LangChain-free) wraps it cleanly:
+**G1. EDGAR XBRL companyfacts API** — free, no key, structured JSON
+
+```
+https://data.sec.gov/api/xbrl/companyfacts/CIK{10-digit-cik}.json
+https://data.sec.gov/api/xbrl/companyconcept/CIK{cik}/us-gaap/{Concept}.json
+```
+
+Returns all XBRL-tagged values for every concept a company has ever filed. Rate limit: 10 req/sec, `User-Agent` header required.
+
+CIK lookup: `https://efts.sec.gov/LATEST/search-index?q="{company name}"&forms=10-K` → `hits[0]._source.ciks`
+
+What you get:
+- All standard income statement / balance sheet / cash flow line items, quarterly + annual, full history
+- Margins computable directly: `grossProfit / totalRevenue`, `operatingIncome / totalRevenue`
+- Multiple entries per period = YTD vs quarterly (different `start` dates) — **not segment breakdown**
+
+What you don't get:
+- **Segment-level revenue** — XBRL dimensions (axis/member) are stripped by the companyfacts API. The dimensional context that would identify e.g. `Components` vs `Systems` is lost. Only the aggregate (no-dimension) context values are returned.
+
+**G2. EDGAR XBRL R-files (viewer JSON/HTML)** — free, no key, more complex to parse
+
+Each 10-K/10-Q filing generates a set of R-files (viewer documents) that preserve dimensional XBRL data. Located at:
+```
+https://www.sec.gov/Archives/edgar/data/{cik}/{accn_nodash}/FilingSummary.xml  → lists R files by name
+https://www.sec.gov/Archives/edgar/data/{cik}/{accn_nodash}/R{N}.htm           → structured HTML table
+```
+
+FilingSummary.xml maps R-file names to human-readable labels — find segment/geographic files by label substring match. The HTML tables contain dimensional data (segment members, geographic members) as readable text rows with $ values and % concentrations.
+
+**Not a clean API** — requires fetching FilingSummary.xml, regex-matching labels, then parsing HTML per R-file. edgartools likely wraps this more cleanly via its `TenK`/`TenQ` object methods.
+
+**G3. edgartools (`pip install edgar`)** — no key, wraps EDGAR access
+
+LangAlpha's `src/tools/sec/parsers/edgartools_parser.py` (~420 lines, LangChain-free) wraps it:
 - `get_latest_filing(symbol, "10-K"|"10-Q"|"8-K")`
 - `_extract_10k_sections()` — item_1 (Business), item_1a (Risk Factors), item_7 (MD&A), item_8 (Financials) as markdown
 - `_extract_financial_statements()` — balance sheet, income stmt, cash flow as tables
@@ -153,6 +189,45 @@ LangAlpha's `src/tools/sec/parsers/edgartools_parser.py` (~420 lines, LangChain-
 - 8-K: press release extraction, item-level filter (2.02=earnings, 2.01=M&A, 5.02=mgmt change, 7.01=guidance)
 
 Copy: `parsers/edgartools_parser.py`, `parsers/base.py`, `types.py`. Skip `tool.py` (LangChain wrapper).
+
+**US public filers only across all three layers.**
+
+---
+
+### G4. EDGAR XBRL test — LITE, COHR, CIEN (tested 2026-07-30)
+
+CIKs confirmed: LITE (Lumentum) = `0001633978`, COHR (Coherent) = `0000820318`, CIEN (Ciena) = `0000936395`
+
+**Aggregate revenue — available, clean:**
+
+| Ticker | Concept | Q3 FY26 quarterly | Form |
+|---|---|---|---|
+| LITE | `RevenueFromContractWithCustomerIncludingAssessedTax` | $808.4M (Q3 FY26, 90d) | 10-Q |
+| COHR | `RevenueFromContractWithCustomerExcludingAssessedTax` | $1,805.6M (Q3 FY26, 90d) | 10-Q |
+| CIEN | `Revenues` | $1,570.7M (Q2 FY26, 90d) | 10-Q |
+
+Margins computable from companyfacts API for all three — `grossProfit`, `operatingIncome`, `totalRevenue` all present.
+
+**Segment / product breakdown — what each company actually files in XBRL:**
+
+LITE (Lumentum) R-files from most recent 10-Q (`0001628280-26-030777`):
+- `R82.htm` — **Geographic revenue** by region/country with $ and % concentration, quarterly + YTD. Americas, US, Mexico, Asia-Pacific, HK, Thailand, Europe, Other.
+- `R84.htm` — **Product type**: Components vs Systems, quarterly + YTD. Q3 FY26: Components $533.3M (66%), Systems $275.1M (34%).
+- No "optical" segment — LITE files as a **single operating segment**. "Cloud & Networking" and "Industrial & Science" are narrative disclosures only, not XBRL-tagged. Components/Systems is the finest product granularity in XBRL.
+
+COHR and CIEN R-file segment structure not yet pulled (same technique applies).
+
+**Implication for "optical revenue as % of total" query:**
+
+| Data | Source | Available? |
+|---|---|---|
+| Gross margin, op margin by quarter | EDGAR companyfacts API | ✅ all three tickers |
+| Geographic revenue breakdown | EDGAR R-files | ✅ LITE confirmed; COHR/CIEN likely |
+| Components vs Systems split (LITE) | EDGAR R-files | ✅ LITE only |
+| "Optical" revenue by product line | SEC narrative / MD&A text | ❌ not XBRL-tagged — PMS2 ingestion required |
+| FY26–FY27 forward estimates | Any structured API | ❌ analyst models only |
+
+The R-file scraper approach (FilingSummary.xml → label match → HTML parse) is buildable but not a clean API call. edgartools is the better abstraction if it surfaces segment tables from the viewer.
 
 ---
 
@@ -212,6 +287,169 @@ Bulk pulls (tick exports, large history) run as **export jobs** — submit job, 
 **Integration:** REST client + export job poller. Full endpoint schema requires JS-rendered docs at `londonstrategicedge.com/api-documentation/` — not statically scrapable. Docs need to be read in browser to get exact paths/params.
 
 **Usecase framing (intentionally vague):** PM wants technical signals available as a datastream when they have higher salience than firm fundamentals — mechanism undefined. LSE is the repository. Specific signal construction (volume anomalies, price momentum, options flow) deferred until usecase crystallizes.
+
+---
+
+### J. defeatbeta-api
+
+`github.com/defeat-beta/defeatbeta-api` — DuckDB client querying 15 Parquet files on HuggingFace (`defeatbeta/yahoo-finance-data`, 3.91 GB). Data sourced from Yahoo Finance + stockanalysis.com, cached as columnar files. Queries are column-pruned server-side via `cache_httpfs` — you don't download the full dataset.
+
+**Install:** `pip install defeatbeta-api`
+
+**Data files available:**
+
+| Parquet file | Content |
+|---|---|
+| `stock_statement.parquet` | Income stmt, balance sheet, cash flow — quarterly + annual |
+| `stock_revenue_breakdown.parquet` | Segment/geography/product revenue breakdowns (from stockanalysis.com) |
+| `stock_prices.parquet` | OHLCV daily |
+| `stock_earning_call_transcripts.parquet` | Full earnings call transcripts with speaker/content |
+| `stock_news.parquet` | Yahoo News articles |
+| `stock_sec_filing.parquet` | SEC filings metadata (10-K, 10-Q, 8-K, 13F, 20-F etc.) |
+| `stock_tailing_eps.parquet` | TTM EPS |
+| `stock_shares_outstanding.parquet` | Shares outstanding history |
+| `daily_treasury_yield.parquet` | US Treasury yields 1mo–30yr |
+| `exchange_rate.parquet` | FX rates |
+| + 5 more | Dividends, splits, officers, calendar, profiles |
+
+**Key methods on `Ticker` class:**
+
+```python
+from defeatbeta_api.data.ticker import Ticker
+t = Ticker("AAPL")
+
+# Margins (pre-computed, quarterly)
+t.quarterly_gross_margin()
+t.quarterly_operating_margin()
+t.quarterly_net_margin()
+t.quarterly_ebitda_margin()
+t.quarterly_fcf_margin()
+
+# Financial statements
+t.quarterly_income_statement()
+t.quarterly_balance_sheet()
+t.quarterly_cash_flow()
+
+# YoY growth
+t.quarterly_revenue_yoy_growth()
+t.quarterly_operating_income_yoy_growth()
+
+# Segment/geography/product revenue breakdown
+t.quarterly_revenue_by_breakdown()   # returns DataFrame with breakdown, series_name, value cols
+t.trailing_revenue_by_breakdown()    # TTM version
+
+# Valuation
+t.ttm_pe(), t.ps_ratio(), t.pb_ratio(), t.enterprise_to_ebitda()
+t.wacc()   # computes from beta + treasury yield + market risk premium
+t.dcf()    # full DCF → Excel output
+
+# Transcripts
+t.earning_call_transcripts().get_transcript(fiscal_year=2025, fiscal_quarter=2)
+```
+
+**Segment data schema** (`quarterly_revenue_by_breakdown()`):
+- `breakdown` — slug e.g. `"revenue-by-segment"`, `"revenue-by-geography"`
+- `breakdown_name` — human-readable
+- `series_name` — dimension member (e.g. `"Data Center"`, `"Americas"`)
+- `value` — raw base units (full dollars, not millions)
+- `currency`, `report_date`, `period_type`
+
+Pivot on `index=report_date, columns=series_name, values=value` for wide table.
+
+**Direct DuckDB query (no Python class needed):**
+```python
+import duckdb
+con = duckdb.connect()
+con.load_extension("httpfs")
+url = "https://huggingface.co/datasets/defeatbeta/yahoo-finance-data/resolve/main/data/stock_revenue_breakdown.parquet"
+
+# Discover what breakdowns exist for a ticker
+con.execute(f"""
+    SELECT DISTINCT breakdown, breakdown_name, value_type
+    FROM '{url}' WHERE symbol='NVDA'
+""").df()
+
+# Pull segment time series
+con.execute(f"""
+    SELECT report_date, series_name, value
+    FROM '{url}'
+    WHERE symbol='NVDA' AND breakdown='revenue-by-segment' AND period_type='quarterly'
+    ORDER BY report_date DESC
+""").df()
+```
+
+**⚠️ Segment coverage test result — LITE, COHR, CIEN:**
+
+Tested live against `stock_revenue_breakdown.parquet`. **All three returned empty.** None of LITE, COHR, or CIEN appear in the breakdown dataset. The dataset covers ~367 tickers total — predominantly large-cap US names. Mid-cap optical names like LITE (Lumentum), COHR (Coherent), CIEN (Ciena) are **not covered**.
+
+```python
+# Verified 2026-07-30:
+# con.execute("SELECT DISTINCT symbol FROM url WHERE symbol IN ('LITE','COHR','CIEN')").df()
+# → Empty DataFrame
+```
+
+**For the optical segment query, defeatbeta is not the path. PMS2 ingestion of 10-K segment footnotes remains the only option.**
+
+**Limitations:**
+- US-listed only
+- Segment coverage sparse outside large-cap — depends on what stockanalysis.com has scraped
+- `openai` hard dep (pulled in even if you don't use LLM analysis features)
+- Data freshness unspecified — check `spec.json` on HuggingFace for last update timestamp
+- Has an MCP server at `mcp/` — could plug into Claude Code directly
+
+---
+
+### K. Alpha Vantage
+
+`alphavantage.co` — REST API, 50+ endpoints covering price, fundamentals, macro, technicals, options, crypto, forex, commodities.
+
+**Free tier:** 25 req/day, 5 req/min (not documented on site, community-confirmed). Enough for light use, not for multi-ticker sessions.
+
+**Install:** raw httpx (simplest), or `pip install alpha-vantage` for SDK wrapper.
+
+**Key endpoints for financial research:**
+
+| Function | What it returns | Free? |
+|---|---|---|
+| `INCOME_STATEMENT` | Quarterly + annual income stmt | ✅ |
+| `BALANCE_SHEET` | Quarterly + annual | ✅ |
+| `CASH_FLOW` | Quarterly + annual | ✅ |
+| `OVERVIEW` | Key ratios: P/E, EPS, margins, ROE, market cap, analyst targets | ✅ |
+| `EARNINGS` | Historical EPS actual vs estimate + surprise % | ✅ |
+| `EARNINGS_CALL_TRANSCRIPT` | Full transcript text | ✅ |
+| `EARNINGS_ESTIMATES` | Forward EPS estimates | ✅ |
+| `NEWS_SENTIMENT` | News with sentiment scores | ✅ |
+| `INSIDER_TRANSACTIONS` | Insider buys/sells | ✅ |
+| `TIME_SERIES_DAILY` | OHLCV, 100 points compact | ✅ |
+| `TIME_SERIES_DAILY` full history | 20+ years | ❌ premium |
+| `REALTIME_BULK_QUOTES` | 100 tickers at once | ❌ premium |
+| Economic indicators | GDP, CPI, Fed funds, treasury yields, unemployment | ✅ |
+| 50+ technical indicators | SMA, EMA, RSI, MACD, BBANDS, etc. | ✅ |
+
+**Income statement fields** (confirmed from IBM demo endpoint):
+`grossProfit`, `totalRevenue`, `costOfRevenue`, `operatingIncome`, `sellingGeneralAndAdministrative`, `researchAndDevelopment`, `operatingExpenses`, `ebit`, `ebitda`, `netIncome`, `depreciation`, `interestExpense`, `incomeTaxExpense`, `incomeBeforeTax` — 26 fields total. **No segment breakdown.**
+
+**Minimal call:**
+```python
+import httpx, os
+
+def av_income_statement(ticker: str) -> dict:
+    r = httpx.get("https://www.alphavantage.co/query", params={
+        "function": "INCOME_STATEMENT",
+        "symbol": ticker,
+        "apikey": os.environ["ALPHAVANTAGE_API_KEY"],
+    })
+    return r.json()  # keys: "annualReports", "quarterlyReports"
+```
+
+**vs yfinance:** Alpha Vantage quarterly income statement covers the same line items as yfinance but with stricter schema (consistent field names, always present even if null). The `EARNINGS_CALL_TRANSCRIPT` endpoint is a genuine differentiator — free, structured, no FMP key needed. `NEWS_SENTIMENT` with per-article sentiment scoring is also additive.
+
+**Verdict:** Not worth adding as a primary data source given the 25 req/day cap. Worth adding specifically for:
+1. `EARNINGS_CALL_TRANSCRIPT` — free alternative to FMP transcript endpoint
+2. `NEWS_SENTIMENT` — sentiment scoring on news that yfinance/Finnhub don't provide
+3. As a fallback when yfinance rate-limits or returns stale data
+
+**⚠️ No segment/geographic revenue data.** Confirmed from documentation — not available at any tier.
 
 ---
 
