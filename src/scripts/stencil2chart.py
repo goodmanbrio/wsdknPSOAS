@@ -142,7 +142,7 @@ def stencil2chart(
     # ── Plot ───────────────────────────────────────────────────
     with plt.style.context(_STYLES):
         plt.rcParams.update({"font.family": "Aptos"})
-        fig, ax = plt.subplots(figsize=(max(6.4, len(periods) * 1.8), 4.8))
+        fig, ax = plt.subplots()
 
         # Plot lines and collect endpoints for direct labels
         endpoints = []  # (y_value, label_text, line_color)

@@ -1,0 +1,67 @@
+╭───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ PSOAS — Poony Sophomore Orchestrated Analyst Strapon                                                                                                                  │
+╰───────────────────────────────────────────────────────────────────── type answers when prompted ──────────────────────────────────────────────────────────────────────╯
+[ORCHESTRATOR]
+PSOAS reporting for duty sir!                                                                                                                                            
+
+Right then. Before I send the extraction workers into the trenches, let me confirm the battle plan:                                                                      
+[ORCHESTRATOR]
+Confirming PMS2 extraction parameters before I fire it off:                                                                                                              
+
+ • Firms: LITE                                                                                                                                                           
+ • Periods: Q4 FY2025, Q1 FY2026, Q2 FY2026, Q3 FY2026                                                                                                                   
+ • Granularity: quarterly                                                                                                                                                
+ • Metrics: Non-GAAP gross margin, Non-GAAP operating margin                                                                                                             
+
+Confirm? [y / edit]                                                                                                                                                      
+> [ORCHESTRATOR]
+Jolly good. Lock and load — extraction underway.                                                                                                                         
+[PMS2] ⚠ files_raw/ modified (2026-08-10 11:44) after files_ingested/ (2026-08-10 11:41). Index may be stale — consider re-running 00_Ingest + 01_Chunk.
+[PMS2] PMS2 pipeline: 1 firms, 4 periods, quarterly.
+[ORCHESTRATOR]
+Blahauarugh. API key not configured on the back end — a bloody administrative snafu. Let me try once more in case it was a transient misfire.                            
+[PMS2] ⚠ files_raw/ modified (2026-08-10 11:44) after files_ingested/ (2026-08-10 11:41). Index may be stale — consider re-running 00_Ingest + 01_Chunk.
+[PMS2] PMS2 pipeline: 1 firms, 4 periods, quarterly.
+[ORCHESTRATOR]
+HUAWKK. Same result — it's an environment configuration issue on the server side (ANTHROPIC_API_KEY not set). Nothing I can fix from here, I'm afraid.                   
+
+Let me try a flanking maneuver through the research pipeline instead — it may have access to LITE's quarterly filings and earnings transcripts.                          
+[RESEARCH] [RESEARCH] Decomposing: What were LITE's (Lumentum) non-GAAP gross margin and non-GAAP operating margin in each quarter from
+[RESEARCH] [RESEARCH] Decomposed into 7 sub-questions:
+[RESEARCH]   1. What were Lumentum's (LITE) non-GAAP gross margin and non-GAAP operating margin in Q4 FY2025 (quarter ended June 2025), with exact percentages?
+[RESEARCH]      Keywords: LITE Q4 FY2025 non-GAAP gross margin, Lumentum June 2025 quarter operating margin, Lumentum Q4 FY25 margin results, LITE fiscal 2025 fourth 
+quarter earnings
+[RESEARCH]   2. What were LITE's non-GAAP gross margin and non-GAAP operating margin in Q1 FY2026 (quarter ended September 2025), with exact percentages?
+[RESEARCH]      Keywords: Lumentum Q1 FY2026 non-GAAP gross margin, LITE September 2025 quarter operating margin, Lumentum Q1 FY26 margin results, LITE fiscal 2026 first
+quarter earnings
+[RESEARCH]   3. What were LITE's non-GAAP gross margin and non-GAAP operating margin in Q2 FY2026 (quarter ended December 2025), with exact percentages?
+[RESEARCH]      Keywords: Lumentum Q2 FY2026 non-GAAP gross margin, LITE December 2025 quarter operating margin, Lumentum Q2 FY26 results margin, LITE fiscal 2026 second
+quarter earnings
+[RESEARCH]   4. What were LITE's non-GAAP gross margin and non-GAAP operating margin in Q3 FY2026 (quarter ended March 2026), with exact percentages?
+[RESEARCH]      Keywords: Lumentum Q3 FY2026 non-GAAP gross margin, LITE March 2026 quarter operating margin, Lumentum Q3 FY26 margin results, LITE fiscal 2026 third 
+quarter earnings
+[RESEARCH]   5. What drivers did Lumentum management cite for sequential changes in non-GAAP gross margin across Q4 FY2025 through Q3 FY2026 (product mix shift, 
+cloud/datacom vs. industrial, manufacturing efficiencies, pricing)?
+[RESEARCH]      Keywords: Lumentum gross margin drivers mix shift, LITE margin product mix cloud networking datacom, Lumentum gross margin manufacturing efficiency, LITE
+gross margin pricing cost actions
+[RESEARCH]   6. What drivers did Lumentum management cite for sequential changes in non-GAAP operating margin across this period (operating leverage, OpEx discipline, 
+R&D investment, cost actions/restructuring)?
+[RESEARCH]      Keywords: Lumentum operating margin operating leverage, LITE non-GAAP operating expenses OpEx discipline, Lumentum cost actions restructuring margin, 
+LITE operating margin expansion drivers
+[RESEARCH]   7. What margin guidance or outlook did Lumentum provide during Q4 FY2025 through Q3 FY2026, and how did actual non-GAAP margins compare to that guidance 
+each quarter?
+[RESEARCH]      Keywords: Lumentum margin guidance Q4 FY2025 Q1 FY2026, LITE gross margin outlook datacom cloud, Lumentum operating margin guidance, LITE FY2026 margin 
+expectations guidance
+[RESEARCH] [RESEARCH] Retrieved 19 unique chunks (cap: 20)
+[RESEARCH] [RESEARCH] Synthesizing answer from 19 chunks...
+[RESEARCH] [RESEARCH] Complete — 5677 chars
+[ORCHESTRATOR]
+Now let me write the full report to the session directory and present the findings.                                                                                      
+[ORCHESTRATOR]
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+LITE Non-GAAP Margins: Q4 FY2025 → Q3 FY2026                                                                                                                             
+
+The Table, as Requested                                                                                                                                                  
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ Quarter                                               ┃ Gross Margin                                          ┃ Op Margin                                             ┃

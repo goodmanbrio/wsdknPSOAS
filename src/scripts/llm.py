@@ -339,7 +339,9 @@ class OpenAICompatibleLLM(LLMBackend):
             elif msg["role"] == "assistant":
                 content = msg["content"]
                 if isinstance(content, str):
-                    result.append({"role": "assistant", "content": content})
+                    # DeepSeek API requires content or tool_calls on assistant
+                    # messages. Use "" not None for empty text-only turns.
+                    result.append({"role": "assistant", "content": content or ""})
                 elif isinstance(content, list):
                     text_parts = []
                     tool_calls = []
@@ -372,6 +374,12 @@ class OpenAICompatibleLLM(LLMBackend):
                         oai_msg["reasoning_content"] = reasoning
                     elif tool_calls and self._thinking:
                         oai_msg["reasoning_content"] = ""
+                    # DeepSeek API requires content or tool_calls to be set
+                    # on assistant messages. reasoning_content alone is not
+                    # enough. When a thinking-only turn produces no text and
+                    # no tool calls, set content="" to pass validation.
+                    if not oai_msg.get("content") and not oai_msg.get("tool_calls"):
+                        oai_msg["content"] = ""
                     result.append(oai_msg)
                 else:
                     result.append(msg)

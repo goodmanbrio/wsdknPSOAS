@@ -48,7 +48,7 @@ def _dump_turn(
     stored_vars: list | None = None,
 ) -> None:
     """Append one turn to the transcript file."""
-    with open(path, "a") as f:
+    with open(path, "a", encoding="utf-8") as f:
         f.write(f"\n## Turn {turn_num}\n\n")
 
         for block in response.raw_content:

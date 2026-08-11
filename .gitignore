@@ -1,5 +1,6 @@
 # Binary/large data
 data/
+mapper.xlsx
 src/scripts/Poony_Multiretrieval_S1/data/
 src/scripts/Poony_Multiretrieval_S1/index/
 src/scripts/Poony_Multiretrieval_S1/output/
@@ -13,10 +14,12 @@ tests/debug/
 # Python
 __pycache__/
 *.pyc
+.venv/
+.pytest_cache/
+*.egg-info/
 
 # Secrets
 .env
 
 # macOS
 .DS_Store
-graphify-out/

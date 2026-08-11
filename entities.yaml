@@ -1,0 +1,75 @@
+# entities.yaml — Maps company folder names (lowercase) to ticker symbols.
+#
+# Used during conversion to populate the "entities" frontmatter field.
+# Key: lowercase company name as it appears in the data/ folder.
+# Value: list of ticker symbols (Bloomberg/Reuters style).
+#
+# Missing entries → entities: [] (empty list, no error).
+
+# ── Optical ────────────────────────────────────────────────────────────
+lite:
+  - LITE
+cohr:
+  - COHR
+"sumitomo electric (5802 jp)":
+  - "5802 JP"
+fujikara:
+  - "5803 JP"
+"furukawa elec 5801 jp":
+  - "5801 JP"
+innolight:
+  - "300308 CH"
+"suzhou dongshan":
+  - "002384 CH"
+yofc:
+  - "601869 CH"
+zhongtian:
+  - "600522 CH"
+
+# ── Power Semi ─────────────────────────────────────────────────────────
+infincon:
+  - IFX
+"st micro":
+  - STM
+innoscience:
+  - "INNOSCIENCE"    # private / pre-IPO
+sicc:
+  - "SICC"           # private / pre-IPO
+"wolfspeed (wolf)":
+  - WOLF
+renesas:
+  - "6723 JP"
+"starpower (603290 ch)":
+  - "603290 CH"
+rohm:
+  - "6963 JP"
+
+# ── Semiconductor Production Equipment (SPE) ───────────────────────────
+lrcx:
+  - LRCX
+amat:
+  - AMAT
+klac:
+  - KLAC
+onto:
+  - ONTO
+camt:
+  - CAMT
+"tokyo electron (tec)":
+  - "8035 JP"
+"screen holdings":
+  - "7735 JP"
+lasertec:
+  - "6920 JP"
+"kokusai electric":
+  - "6525 JP"
+rigaku:
+  - RIGAKU         # private
+mksi:
+  - MKSI
+asml:
+  - ASML
+"asmi (asmna)":
+  - ASM
+besi:
+  - BESI

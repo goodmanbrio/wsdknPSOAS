@@ -21,6 +21,7 @@ from src.scripts.PMS2.stencil_topo import (
     _parse_formula_refs,
     _topo_sort_rows,
 )
+from src.scripts.PMS2.pms2 import _expand_periods
 from src.scripts.PMS2.chunk_overlap import _inject_overlap
 from src.scripts.PMS2.validator_loop import _handle_submit_verdicts
 from src.scripts.PMS2.merge_compute import (
@@ -233,7 +234,7 @@ class TestAssignStructure:
         sorted_rows = _topo_sort_rows(raw_rows, ["LITE", "Innolight"])
         periods_3 = ["FY2025", "FY2026", "FY2027"]
         work, ans, jobs = _assign_structure(
-            sorted_rows, periods_3, ["LITE", "Innolight"], "annual"
+            sorted_rows, periods_3, ["LITE", "Innolight"]
         )
 
         # Work stencil structure
@@ -303,7 +304,44 @@ class TestAssignStructure:
              "unit": "FAKE", "timeframe": "annual"},
         ]
         with pytest.raises(ValueError, match="not in"):
-            _assign_structure(bad_unit_rows, ["FY2025"], ["A"], "annual")
+            _assign_structure(bad_unit_rows, ["FY2025"], ["A"])
+
+
+# =====================================================================
+# T0e: pms2.py -> _expand_periods
+# =====================================================================
+
+class TestExpandPeriods:
+    def test_annual_passthrough(self):
+        assert _expand_periods(
+            ["FY2025", "FY2026"], "annual"
+        ) == ["FY2025", "FY2026"]
+
+    def test_quarterly_expansion(self):
+        assert _expand_periods(["FY2025"], "quarterly") == [
+            "Q1FY2025", "Q2FY2025", "Q3FY2025", "Q4FY2025",
+        ]
+
+    def test_half_expansion(self):
+        assert _expand_periods(["FY2025"], "half") == [
+            "H1FY2025", "H2FY2025",
+        ]
+
+    def test_mixed_already_expanded(self):
+        assert _expand_periods(
+            ["FY2025", "Q3FY2026"], "quarterly"
+        ) == [
+            "Q1FY2025", "Q2FY2025", "Q3FY2025", "Q4FY2025", "Q3FY2026",
+        ]
+
+    def test_dedup(self):
+        assert _expand_periods(
+            ["FY2025", "Q1FY2025"], "quarterly"
+        ) == ["Q1FY2025", "Q2FY2025", "Q3FY2025", "Q4FY2025"]
+
+    def test_annual_with_quarter_prefix_raises(self):
+        with pytest.raises(ValueError, match="annual"):
+            _expand_periods(["Q1FY2025"], "annual")
 
 
 # =====================================================================
@@ -792,10 +830,17 @@ class TestHandleFinalize:
         params = {
             "firms": ["LITE", "Innolight"],
             "periods": ["FY2025", "FY2026", "FY2027"],
-            "granularity": "annual",
             "rows": raw_rows,
         }
-        data, status = _handle_finalize(params, file_inventories={}, session_dir=tmp_path)
+        ch = _StubChannel()
+        data, status = _handle_finalize(
+            params,
+            pipeline_firms=["LITE", "Innolight"],
+            expanded_periods=["FY2025", "FY2026", "FY2027"],
+            file_inventories={},
+            session_dir=tmp_path,
+            channel=ch,
+        )
 
         assert data is not None, f"Expected success, got error: {status}"
         work, ans, jobs, file_inv = data
@@ -867,34 +912,64 @@ class TestHandleFinalize:
         # file_inventories empty (M1 stub)
         assert file_inv == {}
 
-    def test_extra_period_rejected(self, tmp_path):
-        """Period with invalid format (original bug: '3QFY2025') rejected by regex."""
+    def test_extra_firm_rejected(self, tmp_path):
         params = {
-            "firms": ["LITE"],
-            "periods": ["3QFY2025"],  # original bug format — fails regex
-            "granularity": "quarterly",
+            "firms": ["LITE", "FAKE_CORP"],
+            "periods": ["FY2025"],
             "rows": [{"metric": "Rev", "firm": "LITE",
                        "type": "retrieve", "unit": "USD",
-                       "timeframe": "quarterly", "ans": True}],
+                       "timeframe": "annual"}],
         }
-        data, status = _handle_finalize(params, file_inventories={}, session_dir=tmp_path)
+        data, status = _handle_finalize(
+            params,
+            pipeline_firms=["LITE"],
+            expanded_periods=["FY2025"],
+            file_inventories={},
+            session_dir=tmp_path,
+            channel=_StubChannel(),
+        )
         assert data is None
-        assert "3QFY2025" in status
+        assert "FAKE_CORP" in status
+
+    def test_extra_period_rejected(self, tmp_path):
+        params = {
+            "firms": ["LITE"],
+            "periods": ["FY2025", "FY2099"],
+            "rows": [{"metric": "Rev", "firm": "LITE",
+                       "type": "retrieve", "unit": "USD",
+                       "timeframe": "annual"}],
+        }
+        data, status = _handle_finalize(
+            params,
+            pipeline_firms=["LITE"],
+            expanded_periods=["FY2025"],
+            file_inventories={},
+            session_dir=tmp_path,
+            channel=_StubChannel(),
+        )
+        assert data is None
+        assert "FY2099" in status
 
     def test_period_reordering_canonical(self, tmp_path):
-        """Sekei submits periods in wrong order → chronological sort applied."""
+        """Sekei submits periods in wrong order → canonical order preserved."""
         params = {
             "firms": ["LITE"],
             "periods": ["FY2027", "FY2025"],  # wrong order
-            "granularity": "annual",
             "rows": [{"metric": "Rev", "firm": "LITE",
                        "type": "retrieve", "unit": "USD",
                        "timeframe": "annual", "ans": True}],
         }
-        data, status = _handle_finalize(params, file_inventories={}, session_dir=tmp_path)
+        data, status = _handle_finalize(
+            params,
+            pipeline_firms=["LITE"],
+            expanded_periods=["FY2025", "FY2026", "FY2027"],
+            file_inventories={},
+            session_dir=tmp_path,
+            channel=_StubChannel(),
+        )
         assert data is not None
         work = data[0]
-        # Chrono sort: FY2025 before FY2027
+        # Canonical order: FY2025 before FY2027
         assert work["periods"] == ["FY2025", "FY2027"]
         assert work["col_letters"] == ["A", "B"]
 
@@ -902,7 +977,6 @@ class TestHandleFinalize:
         params = {
             "firms": ["LITE"],
             "periods": ["FY2025"],
-            "granularity": "annual",
             "rows": [
                 {"metric": "EV", "firm": "LITE", "type": "compute",
                  "formula": "{EV/EBITDA}", "unit": "USD",
@@ -912,9 +986,37 @@ class TestHandleFinalize:
                  "timeframe": "annual"},
             ],
         }
-        data, status = _handle_finalize(params, file_inventories={}, session_dir=tmp_path)
+        data, status = _handle_finalize(
+            params,
+            pipeline_firms=["LITE"],
+            expanded_periods=["FY2025"],
+            file_inventories={},
+            session_dir=tmp_path,
+            channel=_StubChannel(),
+        )
         assert data is None
         assert "Circular" in status
+
+    def test_missing_firm_warning(self, tmp_path):
+        """Sekei drops a firm → warning printed, not error."""
+        params = {
+            "firms": ["LITE"],  # missing Innolight
+            "periods": ["FY2025"],
+            "rows": [{"metric": "Rev", "firm": "LITE",
+                       "type": "retrieve", "unit": "USD",
+                       "timeframe": "annual", "ans": True}],
+        }
+        ch = _StubChannel()
+        data, status = _handle_finalize(
+            params,
+            pipeline_firms=["LITE", "Innolight"],
+            expanded_periods=["FY2025"],
+            file_inventories={},
+            session_dir=tmp_path,
+            channel=ch,
+        )
+        assert data is not None  # not an error
+        assert any("Innolight" in m for m in ch.messages)  # warning printed
 
 
 # =====================================================================
@@ -932,7 +1034,7 @@ def _build_phase2_fixtures():
     sorted_rows = _topo_sort_rows(raw_rows, ["LITE", "Innolight"])
     periods = ["FY2025", "FY2026", "FY2027"]
     work, ans, jobs = _assign_structure(
-        sorted_rows, periods, ["LITE", "Innolight"], "annual"
+        sorted_rows, periods, ["LITE", "Innolight"]
     )
 
     # Map metric names -> row numbers per firm for convenience
@@ -1023,7 +1125,7 @@ class TestFillAnsStencil:
         raw_rows = _make_canonical_raw_rows()
         sorted_rows = _topo_sort_rows(raw_rows, ["LITE", "Innolight"])
         work, ans, jobs = _assign_structure(
-            sorted_rows, ["FY2025"], ["LITE", "Innolight"], "annual"
+            sorted_rows, ["FY2025"], ["LITE", "Innolight"]
         )
         # Don't fill anything — all null
         _merge_jobs_into_work(work, jobs)
@@ -1241,7 +1343,7 @@ class TestRunPhase2:
              "timeframe": "annual", "ans": True},
         ]
         sorted_rows = _topo_sort_rows(raw_rows, ["X"])
-        work, ans, jobs = _assign_structure(sorted_rows, ["FY2025"], ["X"], "annual")
+        work, ans, jobs = _assign_structure(sorted_rows, ["FY2025"], ["X"])
         ch = _StubChannel()
 
         x_rows = {

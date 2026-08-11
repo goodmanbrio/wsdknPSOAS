@@ -250,11 +250,15 @@ def _exec_pms2(params: dict) -> str:
     if _session_dir is None:
         return "Error: no active session (run_pms2 called outside harness)."
 
+    firms = params["firms"]
     query = params["query"]
+    periods = params["periods"]
+    granularity = params["granularity"]
     channel = register("PMS2")
 
     display_stencils = run_pms2_pipeline(
-        query=query,
+        firms=firms, query=query, periods=periods,
+        granularity=granularity,
         session_dir=_session_dir,
         channel=channel, config=_config, debug_dir=_debug_dir,
     )
@@ -275,14 +279,11 @@ def _exec_pms2(params: dict) -> str:
     )
 
 
-# Both empty-result sentinels in the research module start with this.
-# Verified against the copied source:
-#   research/__init__.py:90  "**No relevant chunks found.** ..."
-#   research/synthesizer.py:45 "**No relevant documents found.** ..."
-_RESEARCH_EMPTY_PREFIX = "**No relevant "
-
-
 def _exec_research(params: dict) -> str:
+    from src.harness.answer_sheet_summary import (
+        SummaryGenerationError,
+        generate_answer_sheet_summary,
+    )
     from src.scripts.research import run_research_pipeline
 
     if _session_dir is None:
@@ -298,25 +299,44 @@ def _exec_research(params: dict) -> str:
         channel=channel,
         debug_dir=_debug_dir,
     )
-
-    if answer.startswith(_RESEARCH_EMPTY_PREFIX):
-        return (
-            "BUMMER retrieval empty — no documents matched this question. "
-            "No handle was stored and no file was written. Do not present "
-            "this as an answer; tell the user the corpus had nothing, or "
-            "retry with a more specific question.\n\n"
-            f"{answer}"
-        )
-
-    handle = registry.store(answer, f"Research: {question[:80]}")
-
     safe_name = re.sub(r"[^\w\s\-]", "", question[:50]).strip().replace(" ", "_")
+
+    # Preserve the existing raw-answer storage and current-turn artifact.
+    handle = registry.store(answer, f"Research: {question[:80]}")
     answer_path = _session_dir / f"research_{safe_name}.md"
     answer_path.write_text(answer, encoding="utf-8")
 
+    summary_notice = ""
+    try:
+        if _config is None:
+            raise RuntimeError("research config is unavailable for summarization")
+        summary = generate_answer_sheet_summary(
+            main_user_query=question,
+            answer_sheet_markdown=answer,
+            config=_config,
+        )
+    except SummaryGenerationError as exc:
+        channel.print(f"[RESEARCH] {exc}; raw answer preserved")
+    except Exception as exc:
+        channel.print(
+            f"[RESEARCH] Summary integration unavailable: {exc}; "
+            "raw answer preserved"
+        )
+    else:
+        summary_handle = registry.store(
+            summary,
+            f"Answer-sheet summary: {question[:80]}",
+        )
+        summary_path = _session_dir / f"summary_{safe_name}.md"
+        summary_path.write_text(summary, encoding="utf-8")
+        summary_notice = (
+            f" Summary stored as {summary_handle}."
+            f" Saved summary to: {summary_path}"
+        )
+
     return (
         f"Research complete. Answer stored as {handle}. "
-        f"Saved to: {answer_path}\n\n{answer}"
+        f"Saved to: {answer_path}.{summary_notice}\n\n{answer}"
     )
 
 

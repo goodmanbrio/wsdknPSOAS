@@ -20,10 +20,19 @@ psoas.py → agent_loop.py (orchestrator REPL)
   │       └── Batch Planner → LengCaller → Leng × N → Validator × N
   │     Phase 2: merge jobs → compute formulas → display stencils
   │
+  ├── run_research → research/__init__.py
+  │     Stage 1: Decomposer (LLM: question → sub-questions + keywords)
+  │     Stage 2: Retriever (BM25 keyword search over docstore chunks)
+  │     Stage 3: Synthesizer (LLM: chunks → cited markdown answer)
+  │
   ├── run_pteca → tool_pteca.py (chart layout planner)
   ├── run_stencil2chart → stencil2chart.py (SVG renderer)
   └── ask_user, inspect_var, write/read_session_md
 ```
+
+The answer-sheet summary and citation package is bundled at
+`OSHA_summary_output_spec/`. The harness loads this copy automatically, so a
+fresh clone does not require the separate sibling workspace project.
 
 ## Components
 
@@ -31,10 +40,29 @@ psoas.py → agent_loop.py (orchestrator REPL)
 |---|---|---|
 | Harness | `src/harness/` | agent_loop, execute_tool, opaque_registry, terminal_router, system_prompt |
 | PMS2 pipeline | `src/scripts/PMS2/` | Sekei → Mapper → Dispatcher → Leng → Validator → merge/compute. Multi-firm extraction |
+| Research pipeline | `src/scripts/research/` | Decomposer → Retriever (BM25) → Synthesizer. Open-ended QA over ingested docs |
 | PTECA | `src/tools/tool_pteca.py` | Multi-stencil chart planning agent (internal agent loop, always-ask) |
 | stencil2chart | `src/scripts/stencil2chart.py` | Matplotlib rendering with direct-line labels |
 | LLM backend | `src/scripts/llm.py` | Model-agnostic factory: Anthropic, OpenAI, Gemini via `call_with_tools()` + `structured_complete()` |
 | PMS1 (legacy) | `src/scripts/Poony_Multiretrieval_S1/src/` | Single-firm pipeline. Dispatch commented out, code in tree |
+
+## Quick start
+
+```bash
+# 1. Drop PDFs/DOCX into data/files_raw/ (mirrors subdirectory structure)
+
+# 2. Convert to markdown
+python src/scripts/PMS2/00_Ingest.py
+
+# 3. Build searchable chunks + docstore
+python src/scripts/PMS2/01_Chunk.py
+
+# 4. Fire up the REPL
+python src/psoas.py
+```
+
+The BM25 index for open-ended research is built lazily on the first
+`run_research` call (or pre-build it with `python tests/stress_research.py`).
 
 ## Usage
 
@@ -42,8 +70,12 @@ psoas.py → agent_loop.py (orchestrator REPL)
 # Interactive REPL
 python src/psoas.py
 
-# Single query
+# Tabular extraction (→ run_pms2)
 python src/psoas.py "Revenue, Gross Margin for LITE and Innolight FY2025-FY2026"
+
+# Open-ended research (→ run_research)
+python src/psoas.py "What is the bull case for LITE?"
+python src/psoas.py "Summarize the OFC conference takeaways."
 ```
 
 ## Dependencies
@@ -54,6 +86,13 @@ pip install -r requirements.txt
 
 Requires `ANTHROPIC_API_KEY` in `.env` or environment.
 
+Stored-context answer summaries also require `DEEPSEEK_API_KEY`; set
+`DEEPSEEK_SUMMARY_MODEL` when the summary model should differ from the
+research-synthesizer profile.
+
+`run_research` additionally requires a BM25 index over chunks. This is built
+lazily on the first call (or run `tests/stress_research.py` to pre-build it).
+
 ## Key design decisions
 
 - **Three-stencil model**: ans (user-facing) / work (full grid) / job (per-firm slice). Topo-sorted rows, Rn formula notation, compare-and-swap writes.
@@ -61,6 +100,9 @@ Requires `ANTHROPIC_API_KEY` in `.env` or environment.
 - **TerminalRouter**: All I/O through `register("LABEL")` → ToolChannel. No raw print/input.
 - **Parallel extraction**: Per-firm Dispatchers run in parallel. Within each, Leng × N chunks + Validator × N hits fire concurrently.
 - **Model-agnostic**: LLMBackend normalizes tool calling across Anthropic/OpenAI/Gemini APIs.
+- **Open-ended QA**: Separate `run_research` pipeline. Query decomposed into sub-questions,
+  BM25 keyword retrieval (zero API cost, no embeddings), synthesized into cited
+  markdown answer. Runs alongside tabular extraction — orchestrator routes by intent.
 
 ## Specs
 
@@ -98,9 +140,17 @@ src/
       merge_compute.py         Phase 2: merge + formula eval
       00_Ingest.py             pdf/docx → md
       01_Chunk.py              md → docstore
+    research/
+      __init__.py              pipeline entry: decompose → retrieve → synthesize
+      decomposer.py            LLM query decomposition (V4 Flash)
+      retriever.py             BM25 keyword retrieval + dedup
+      synthesizer.py           LLM answer synthesis with citations
+      bm25_index.py            BM25Okapi index — lazy-build, cached, staleness-aware
 
 sysprompts/
   orchestrator/                orchestrator prompt
+  research_decomposer/         query decomposition prompt
+  research_synthesizer/        answer synthesis prompt
   pms2_sekei/                  Sekei prompt
   pms2_mapper/                 Mapper prompt
   pms2_batch_planner/          BP prompt

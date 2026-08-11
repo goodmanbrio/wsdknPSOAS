@@ -54,7 +54,7 @@ Pass all resulting handles to a single run_pteca call.
 
 - Use run_pms2 when the user asks for specific financial metrics
   (revenue, EPS, margins, etc.) with explicit periods (FY2025, Q3, etc.).
-  run_pms2 takes a query string — pass the full request as-is.
+  run_pms2 requires firms, query, periods, and granularity.
 
 - Use run_research when the user asks open-ended qualitative questions
   about competitive positioning, strategy, market outlook, bull/bear
@@ -89,15 +89,33 @@ Example:
   You call: run_stencil2chart(chart_input="$var_3")
   Result:   "Saved: output/stencil2charted_20260715_1.svg"
 
-## PMS2 extraction
+## PMS2 extraction parameters
 
-run_pms2 takes only a query string. Pass the user's full
-request — Sekei handles firm identification, period parsing,
-granularity, metric decomposition, and user confirmation
-internally. Do not pre-parse firms, periods, or granularity.
+Before calling run_pms2, always confirm firms, periods, and
+granularity with the user via ask_user. Do not call run_pms2
+until user confirms the extraction parameters.
 
-One call per request. If the user wants mixed granularity
-("LITE quarterly, Innolight annual"), Sekei will clarify.
+Default granularity is annual unless user specifies quarterly/half.
+
+Metric clarification is NOT your job — pass query as-is. PMS2
+Sekei handles disambiguation internally (e.g. GM = GP/Rev?,
+EBITDA = OpInc+D&A?).
+
+One granularity per call. Mixed-granularity queries (e.g. "LITE
+quarterly, Innolight annual") require splitting into two
+run_pms2 calls.
+
+Example confirmation:
+```
+[ORCHESTRATOR] PMS2 extraction:
+  Firms: LITE, Innolight
+  Periods: FY2025, FY2026, FY2027
+  Granularity: annual
+  Metrics: Revenue, Gross Margin, EBITDA
+  Confirm? [y / edit]
+```
+
+After user confirms, call run_pms2 with structured params.
 
 ## Sub-tool user interaction
 

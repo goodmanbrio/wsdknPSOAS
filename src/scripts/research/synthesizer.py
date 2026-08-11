@@ -37,7 +37,7 @@ def synthesize_answer(
     -------
     str
         Markdown-formatted answer with source citations.
-    """
+    """ 
     from src.scripts.llm import get_research_synthesizer_llm
 
     if not chunks:

@@ -83,12 +83,12 @@ class Config:
     pms2_validator_max_workers: int = 50                       # concurrent Validator agent loops per firm
 
     # ── Research (open-ended QA) LLM role → profile mapping ──────────
-    research_decomposer_profile: str = "deepseek_v4flash_temp0"
-    research_synthesizer_profile: str = "deepseek_v4pro_highalloc"
+    research_decomposer_profile: str = "deepseek_v4flash_temp0"   # V4 Flash: cheap, deterministic decomposition
+    research_synthesizer_profile: str = "deepseek_v4pro_highalloc" # V4 Pro: frontier reasoning synthesis, generous context
 
     # ── Research retrieval parameters ───────────────────────────────
-    research_bm25_top_k: int = 5
-    research_max_chunks: int = 20
+    research_bm25_top_k: int = 5          # chunks retrieved per sub-question
+    research_max_chunks: int = 20         # global cap after dedup across sub-questions
 
     # ── Chart output ──────────────────────────────────────────────────
     output_dir: Path = field(default_factory=lambda: _PMS1_ROOT / "output")
