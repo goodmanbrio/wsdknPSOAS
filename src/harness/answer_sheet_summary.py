@@ -43,13 +43,20 @@ def generate_answer_sheet_summary(
         summarize_fn = _load_summary_function()
     assert summarize_fn is not None
 
+    # The public answer-sheet boundary now carries local citation labels and
+    # a bibliography. The standalone summary package still consumes the
+    # original upstream source-reference form, so expand it at this seam.
+    from src.harness.answer_sheet_contract import expand_answer_sheet_for_summary
+
+    summary_input = expand_answer_sheet_for_summary(answer_sheet_markdown)
+
     errors: list[Exception] = []
     last_uncited_draft: str | None = None
     for _attempt in range(SUMMARY_ATTEMPTS):
         try:
             return summarize_fn(
                 main_user_query,
-                answer_sheet_markdown,
+                summary_input,
                 SUMMARY_BUDGET,
             )
         except Exception as exc:  # retry policy is owned by this boundary
@@ -67,7 +74,7 @@ def generate_answer_sheet_summary(
         if fallback_fn is not None:
             return fallback_fn(
                 main_user_query,
-                answer_sheet_markdown,
+                summary_input,
                 last_uncited_draft,
             )
 

@@ -21,6 +21,15 @@ _ENTITY_PREFIX_RE = re.compile(
     r"\s+>\s+"
 )
 BIBLIOGRAPHY_CHILD_INDENT = "\u00a0" * 4
+_PUBLIC_BIBLIOGRAPHY_PARENT_RE = re.compile(
+    r"^\[(?P<label>[1-9][0-9]*)\]\s+\[Source: (?P<filename>[^\]]+)\]$"
+)
+_PUBLIC_BIBLIOGRAPHY_CHILD_RE = re.compile(
+    r"^(?:\s|\u00a0)+\[(?P<label>[1-9][0-9]*\.[1-9][0-9]*)\]\s+(?P<section>.+)$"
+)
+_LOCAL_CITATION_LABEL_RE = re.compile(
+    r"\[(?P<label>[1-9][0-9]*(?:\.[1-9][0-9]*)?)\]"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,6 +38,60 @@ class CitationAssignments:
 
     labels: tuple[str, ...]
     bibliography_entries: tuple[str, ...]
+
+
+def expand_labeled_answer_sheet(answer_sheet_markdown: str) -> str:
+    """Convert an option-A answer sheet back to upstream source citations.
+
+    The summary model still reasons over exact ``[Source: filename — section]``
+    references. Option-A answer sheets expose local labels publicly, so this
+    adapter reconstructs those references from the answer-sheet bibliography.
+    Raw pre-option-A answer sheets pass through unchanged.
+    """
+    if "[[OSHA_ID:" not in answer_sheet_markdown:
+        return answer_sheet_markdown
+
+    lines = answer_sheet_markdown.splitlines()
+    bibliography_index = next(
+        (
+            index
+            for index, line in enumerate(lines)
+            if line.strip() == "## Bibliography"
+        ),
+        None,
+    )
+    if bibliography_index is None:
+        return answer_sheet_markdown
+
+    label_to_reference: dict[str, str] = {}
+    current_filename: str | None = None
+    for line in lines[bibliography_index + 1 :]:
+        parent_match = _PUBLIC_BIBLIOGRAPHY_PARENT_RE.fullmatch(line.strip())
+        if parent_match is not None:
+            current_filename = parent_match.group("filename")
+            continue
+        child_match = _PUBLIC_BIBLIOGRAPHY_CHILD_RE.fullmatch(line)
+        if child_match is not None and current_filename is not None:
+            label_to_reference[child_match.group("label")] = (
+                f"[Source: {current_filename} — "
+                f"{child_match.group('section').strip()}]"
+            )
+
+    body_lines = [
+        line
+        for line in lines[:bibliography_index]
+        if not line.startswith("[[OSHA_ID:")
+        and not line.startswith("[[OSHA_SUMMARY_TYPE:")
+    ]
+    body = "\n".join(body_lines).strip()
+
+    if not label_to_reference:
+        return body
+
+    def replace(match: re.Match[str]) -> str:
+        return label_to_reference.get(match.group("label"), match.group(0))
+
+    return _LOCAL_CITATION_LABEL_RE.sub(replace, body)
 
 
 def assign_local_citation_labels(

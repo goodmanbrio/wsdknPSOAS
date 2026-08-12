@@ -5,9 +5,9 @@
 - Write date: 20260807
 - Update date: 20260811
 - Codebase last changed date: 20260805 (based on the existing OSHA project records)
-- Implemented: N
-- Status: IMPLEMENTATION IN PROGRESS — ANSWER-SHEET SUMMARY 20260811
-- Summary: This spec defines the Markdown instruction and output contract for summarizing one final research answer sheet produced by one synthesizer call. The research pipeline decomposes one main question into 3–7 subquestions, performs one BM25 retrieval call per subquestion, deduplicates retrieved chunks under a global cap, and synthesizes one answer sheet. This project summarizes that answer sheet and excludes decomposition, retrieval, synthesis, persistent storage, `var_ans`, database, parser, orchestrator, PMS2, top-level routing, fallback behavior, and other broader OSHA implementation work.
+- Implemented: Y (option-A upstream answer-sheet boundary and summary adapter)
+- Status: IMPLEMENTED — ANSWER-SHEET CITATION BOUNDARY 20260812
+- Summary: This spec defines the Markdown instruction and output contract for the answer-sheet boundary and its downstream summary. The research pipeline decomposes one main question into 3–7 subquestions, performs one BM25 retrieval call per subquestion, deduplicates retrieved chunks under a global cap, and synthesizes one answer sheet. The Python answer-sheet boundary adds `OSHA_ID`, local numeric/section citation labels, and a grouped bibliography; the downstream project summarizes that labeled answer sheet for storage. This project excludes decomposition, retrieval, synthesis content design, persistent storage, `var_ans`, database, parser, orchestrator, PMS2, top-level routing, fallback behavior, and other broader OSHA implementation work.
 - Design-method reference: `/Users/derickfeng/Desktop/DerickWorkingDir/wsnSpecsutekisa` (especially `SKILL.md`, `references/00_GoodBuildSpec.md`, `references/Failuremodes.md`, and `references/Problemspace.md`)
 
 ## 1. Scope boundary
@@ -63,14 +63,19 @@ PMS2 fallback behavior, is outside this contract. PMS2 is relevant to this
 specification only if a future design explicitly sends PMS2 output through the
 research pipeline's summary-stage interface.
 
-This project operates at answer-sheet granularity. It creates one
-summary-stage block for one synthesized answer sheet per main user query. The
-upstream answer sheet is free-form Markdown: it starts with a direct answer of
-2–4 sentences, continues with thematic `##` sections, and ends with a `## Key
-uncertainties` section. Factual claims use the upstream citation text
-`[Source: filename — section]`. This project does not receive separate
-mini-OSHA packages, sibling branches, or the complete current-turn transcript
-unless those are explicitly embedded in the answer-sheet input contract.
+This project operates at answer-sheet granularity. It creates one public
+answer-sheet block and one downstream summary-stage block for one synthesized
+answer sheet per main user query. The upstream synthesizer draft is free-form
+Markdown: it starts with a direct answer of 2–4 sentences, continues with
+thematic `##` sections, and ends with a `## Key uncertainties` section.
+Factual claims use the upstream citation text `[Source: filename — section]`.
+At the answer-sheet boundary, deterministic Python adds the percent-encoded
+`OSHA_ID`, `OSHA_SUMMARY_TYPE:ANSWER_SHEET`, local numeric/section labels, and
+the grouped `## Bibliography`. The downstream summary adapter expands those
+local labels back to exact upstream references before asking the summary model
+to summarize. This project does not receive separate mini-OSHA packages,
+sibling branches, or the complete current-turn transcript unless those are
+explicitly embedded in the answer-sheet input contract.
 
 The summary stage therefore requires a bounded and deterministic output
 contract. Without one, stored summaries can vary in structure, repeat source
@@ -376,13 +381,13 @@ flowchart TD
     RETR --> CHUNKS[/"deduplicated retrieved chunks<br/>07_CompleteFocusedOSHAOutputSpec.md:§4.1"/]
     CHUNKS --> SYNTH["one research synthesizer call<br/>src/scripts/research/synthesizer.py:20-87"]
     SYNTH --> CURRENT[/"one synthesized answer sheet<br/>current-turn research output"/]
-    CURRENT --> INPUT[/"one answer sheet with upstream source references<br/>07_CompleteFocusedOSHAOutputSpec.md:§8.1"/]
+    CURRENT --> INPUT[/"one public answer sheet with OSHA_ID, local citations, and Bibliography<br/>07_CompleteFocusedOSHAOutputSpec.md:§8.0"/]
     BUDGET[/"one Ssummary limit<br/>07_CompleteFocusedOSHAOutputSpec.md:§4.2"/] -.-> INPUT
     INPUT --> SUMMARY["answer-sheet summary stage<br/>07_CompleteFocusedOSHAOutputSpec.md:§9 Role"]
     SUMMARY --> COVER{"answer sheet and upstream references sufficient?<br/>07_CompleteFocusedOSHAOutputSpec.md:§8.7"}
     COVER -->|no| INSUFF["emit structured insufficient-evidence summary<br/>07_CompleteFocusedOSHAOutputSpec.md:§8.8"]
     COVER -->|yes| SUMMARIZE["write compact answer-sheet summary<br/>output structure finalized in §8"]
-    SUMMARIZE --> CITE["assign local [1], [2] labels and upstream-format bibliography<br/>07_CompleteFocusedOSHAOutputSpec.md:§7.3-§7.4"]
+    SUMMARIZE --> CITE["preserve expanded upstream citations; assign summary-local labels and bibliography<br/>07_CompleteFocusedOSHAOutputSpec.md:§7.3-§7.4"]
     INSUFF --> CITE
     CITE --> DERIVED{"derived calculation in summary?<br/>07_CompleteFocusedOSHAOutputSpec.md:§7.5"}
     DERIVED -->|yes; all inputs cited| DER["emit local numeric citation and derived bibliography record<br/>07_CompleteFocusedOSHAOutputSpec.md:§7.5"]
@@ -408,7 +413,7 @@ flowchart TD
 | Concern | Current baseline | Proposed answer-sheet summary contract |
 |---|---|---|
 | Unit of work | One research answer sheet per main query | One summary block per answer sheet |
-| Context | Synthesizer sees the original question and all retrieved chunks | Summary stage sees one synthesized answer sheet with upstream source references |
+| Context | Synthesizer sees the original question and all retrieved chunks | Summary adapter receives one public labeled answer sheet and expands its bibliography to upstream source references |
 | Answer structure | Free-form synthesized Markdown | Compact citation-preserving summary; exact structure is defined in §8 |
 | Research fan-out | 3–7 subquestions; one retrieval call per subquestion | No additional fan-out |
 | Ordinary source reference | Repeated `[Source: filename — section]` text | Grouped local parent label for the full filename with indented section sublabels |
@@ -438,13 +443,13 @@ Example:
 [1.2]
 ```
 
-Parent labels reset independently for every summary sheet. The same parent
-label, such as `1`, may therefore refer to different full filenames in
-different summary sheets. The summary project assigns parent labels in
-first-use order to distinct full filenames and child labels in first-use order
-to distinct sections within each filename. Repeated use of the same
-filename-section pair reuses its child label. A derived calculation's label
-interaction with this parent/child namespace is specified separately.
+Parent labels reset independently for every answer-sheet or summary block. The
+same parent label, such as `1`, may therefore refer to different full
+filenames in different blocks. The deterministic boundary assigns parent
+labels in first-use order to distinct full filenames and child labels in
+first-use order to distinct sections within each filename. Repeated use of the
+same filename-section pair reuses its child label. A derived calculation's
+label interaction with this parent/child namespace is specified separately.
 
 ### 7.2 Approved metadata markers
 
@@ -455,13 +460,16 @@ Every block begins with:
 [[OSHA_SUMMARY_TYPE:ANSWER_SHEET]]
 ```
 
-The summary stage receives the original main user query from upstream and
-serializes it in `OSHA_ID` using UTF-8 percent-encoding. Every UTF-8 byte is
+The answer-sheet boundary receives the original main user query from the
+research pipeline and serializes it in `OSHA_ID` using UTF-8 percent-encoding.
+Every UTF-8 byte is
 percent-encoded except the RFC 3986 unreserved characters `A-Z`, `a-z`,
 `0-9`, `-`, `.`, `_`, and `~`; hexadecimal digits use uppercase. The stored
 identifier must decode back to the exact original query, including whitespace,
 newlines, punctuation, and non-ASCII characters. No subquery, sub-subquery,
 mini-OSHA, or assigned-query marker is part of this contract.
+
+The same metadata grammar is retained by the downstream summary block.
 
 ### 7.3 Approved ordinary citations
 
@@ -559,25 +567,60 @@ inputs.
 
 ## 8. Answer-sheet summary contract
 
+### 8.0 Upstream answer-sheet public boundary
+
+The research synthesizer returns an unwrapped draft containing exact upstream
+references in `[Source: filename — section]` form. A deterministic Python
+boundary immediately wraps that draft before it is printed in the current
+turn or handed to the summary stage. It adds:
+
+```markdown
+[[OSHA_ID:<percent_encoded_main_user_query>]]
+[[OSHA_SUMMARY_TYPE:ANSWER_SHEET]]
+
+<the original synthesized Markdown with local inline labels>
+
+## Bibliography
+
+[<parent_label>] [Source: <full_filename>]
+
+    [<parent_label>.<section_label>] <section>
+```
+
+The boundary assigns local labels in first-use order, preserves the full
+filename, splits distinct sections into child labels, reuses labels for
+repeated filename-section pairs, and moves citation-only lines to the end of
+the preceding claim. The public answer sheet keeps the synthesizer's existing
+thematic Markdown sections; it is not rewritten into the downstream
+`## Answer Summary` structure. The summary adapter reverses the local labels
+to exact upstream references before invoking the summary model.
+
+The answer-sheet model profile declares a `max_tokens` setting, but the current
+DeepSeek completion path does not explicitly pass that setting for ordinary
+research synthesis. Therefore the effective answer-sheet output cap remains a
+separate unresolved runtime concern; this option-A citation change does not
+alter it.
+
 ### 8.1 Answer-sheet summary input fields
 
 The answer-sheet summary stage receives:
 
-1. One final answer sheet returned by the research synthesizer
+1. One final public answer sheet returned by the research pipeline, including
+   `OSHA_ID`, local citations, and its Bibliography
 2. The main user query, used as the summary identifier
 3. The assigned `Ssummary` output budget
 
-The input does not contain this project's local numeric citation labels. The
-answer sheet itself carries the upstream `[Source: filename — section]`
-references. No filepath, raw retrieved chunk, source-file mapping, or opaque
-source metadata is required by this project.
+The answer sheet carries deterministic local citation labels and its grouped
+bibliography. The summary adapter expands those labels to the exact upstream
+`[Source: filename — section]` references before the model call. No filepath,
+raw retrieved chunk, source-file mapping, or opaque source metadata is
+required by the summary project.
 
 The answer sheet is the summary stage's evidence input. The summary stage does
 not retrieve additional content, does not call the synthesizer again, and does
-not require the raw retrieved chunks as input. The deterministic wrapper
-assigns local numeric labels to the upstream source references it receives;
-the model draft does not assign labels or invent a citation when the upstream
-answer provides none.
+not require the raw retrieved chunks as input. The summary model preserves the
+expanded upstream references; the deterministic summary wrapper assigns its
+own local labels in the stored summary block.
 
 ### 8.2 Required output fields
 
@@ -849,11 +892,11 @@ not the model, creates the final stored-context block.
 
 ### Context boundary
 
-You receive one answer sheet in the upstream Markdown format, the supplied
-main-user-query identifier, and `Ssummary`. The input does not contain local
-numeric citation labels assigned by this project. Preserve exact upstream
-`[Source: filename — section]` references already present in the answer sheet;
-the deterministic wrapper assigns local numeric labels afterward. Do not
+You receive one public answer sheet containing deterministic local numeric
+labels and a grouped Bibliography, plus the supplied main-user-query
+identifier and `Ssummary`. The summary adapter expands those labels to exact
+upstream `[Source: filename — section]` references before this instruction is
+given to the model. Preserve those exact upstream references in the draft; do not
 resolve paths, retrieve files, inspect raw chunks, or invent a source
 reference. Treat the main user query as an identifier, not as permission to
 assume access to the decomposer's subquestions, complete transcript, or

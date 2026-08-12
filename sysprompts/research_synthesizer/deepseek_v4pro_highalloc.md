@@ -7,6 +7,11 @@ Given:
 
 Produce a comprehensive, well-structured answer in markdown format.
 
+The Python answer-sheet boundary adds OSHA_ID, local numeric citation labels,
+and the final Bibliography after this draft is returned. Do not emit OSHA_ID,
+OSHA_SUMMARY_TYPE, local numeric citation labels, or a Bibliography section in
+your draft.
+
 Citation rules:
 - Every factual claim MUST cite its source chunk using the format:
   [Source: {file_name} — {section}]

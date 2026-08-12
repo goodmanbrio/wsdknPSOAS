@@ -13,8 +13,8 @@ flowchart TD
     end
 
     subgraph THIS_PROJECT["This project: one answer-sheet summary"]
-        INPUT["Input: one answer sheet\nupstream [Source: filename — section] references"]
-        SUMMARY["Answer-sheet summarization + local [1] citations\nusing one Ssummary allocation\nno filepath lookup, decomposition, retrieval, or synthesis"]
+        INPUT["Input: one public answer sheet\nOSHA_ID + local citations + Bibliography"]
+        SUMMARY["Answer-sheet summarization\nexpand local labels to upstream references, then assign summary-local labels\nusing one Ssummary allocation"]
         OUTPUT["Output: one self-contained summary block\nwith metadata, citations, and bibliography"]
         INPUT --> SUMMARY --> OUTPUT
     end
@@ -49,9 +49,12 @@ flowchart TD
 The upstream research pipeline decomposes the main query into 3–7 subquestions,
 retrieves and deduplicates source chunks, and uses one synthesizer call to
 produce one answer sheet containing `[Source: filename — section]` references.
-This project receives that answer sheet, assigns local numeric citation labels,
-and returns one compact summary block. It does not receive or resolve
-filepaths. The answer sheet remains available in the current conversation turn.
+The upstream boundary first adds OSHA_ID, local numeric/section citation
+labels, and a grouped Bibliography to the current-turn answer sheet. This
+project receives that public answer sheet, expands the labels to exact upstream
+references for the summary model, and returns one compact summary block with
+its own per-block labels. It does not receive or resolve filepaths. The answer
+sheet remains available in the current conversation turn.
 The summary block is the artifact sent to persistent storage for retrieval as
 context in later conversation turns.
 

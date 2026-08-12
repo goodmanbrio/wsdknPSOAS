@@ -14,6 +14,7 @@ Usage:
 from __future__ import annotations
 
 from src.config import Config
+from src.harness.answer_sheet_contract import format_answer_sheet
 from src.harness.sysprompts import load_sysprompt
 
 
@@ -80,8 +81,9 @@ def synthesize_answer(
         f"[Source: filename — section] format."
     )
 
-    return backend.complete(
+    answer_draft = backend.complete(
         prompt=prompt,
         system_prompt=sysprompt,
         label="research-synthesize",
     )
+    return format_answer_sheet(question, answer_draft)

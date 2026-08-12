@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from .citations import assign_local_citation_labels, extract_upstream_references
+from .citations import (
+    assign_local_citation_labels,
+    expand_labeled_answer_sheet,
+    extract_upstream_references,
+)
 from .deepseek import DeepSeekSummaryClient
 from .prompt import build_summary_prompt
 from .renderer import (
@@ -46,14 +50,15 @@ def summarize_answer_sheet_with_client(
     if answer_sheet_markdown is None or not answer_sheet_markdown.strip():
         return render_insufficient_evidence_block(main_user_query)
 
+    summary_input = expand_labeled_answer_sheet(answer_sheet_markdown)
     prompt = build_summary_prompt(
         main_user_query,
-        answer_sheet_markdown,
+        summary_input,
         s_summary,
     )
     summary_draft = client.complete(prompt, max_tokens=s_summary)
     if (
-        extract_upstream_references(answer_sheet_markdown)
+        extract_upstream_references(summary_input)
         and not extract_upstream_references(summary_draft)
     ):
         raise SummaryDraftCitationError(summary_draft)
@@ -77,7 +82,8 @@ def fallback_uncited_summary(
     but every exact upstream source reference from the answer sheet is listed
     in the bibliography because claim-level mapping is unavailable.
     """
-    upstream_references = extract_upstream_references(answer_sheet_markdown)
+    summary_input = expand_labeled_answer_sheet(answer_sheet_markdown)
+    upstream_references = extract_upstream_references(summary_input)
     assignments = assign_local_citation_labels(upstream_references)
     fallback_block = render_summary_block(
         main_user_query,

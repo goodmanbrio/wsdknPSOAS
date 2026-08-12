@@ -22,7 +22,10 @@ from osha_summary.renderer import (
     render_summary_unavailable_block,
     render_summary_with_budget,
 )
-from osha_summary.summary import summarize_answer_sheet
+from osha_summary.summary import (
+    summarize_answer_sheet,
+    summarize_answer_sheet_with_client,
+)
 from osha_summary.validator import (
     validate_bibliography_order,
     validate_citation_integrity,
@@ -540,3 +543,31 @@ def test_u27_html_entity_semicolon_is_not_a_section_delimiter() -> None:
         "[1] [Source: report.md]\n"
         f"{BIBLIOGRAPHY_CHILD_INDENT}[1.1] Hardware &amp; Networking > Valuation",
     )
+
+
+def test_u28_labeled_upstream_answer_sheet_is_accepted_by_summary_stage() -> None:
+    labeled_answer_sheet = (
+        "[[OSHA_ID:What%20happened%3F]]\n"
+        "[[OSHA_SUMMARY_TYPE:ANSWER_SHEET]]\n\n"
+        "## Direct Answer\n\n"
+        "Sales improved. [1.1]\n\n"
+        "## Bibliography\n\n"
+        "[1] [Source: report.md]\n\n"
+        f"{BIBLIOGRAPHY_CHILD_INDENT}[1.1] Sales"
+    )
+
+    class Client:
+        def complete(self, prompt: str, max_tokens: int) -> str:
+            assert "[Source: report.md — Sales]" in prompt
+            assert "[[OSHA_ID:" not in prompt
+            return "Sales improved. [Source: report.md — Sales]"
+
+    output = summarize_answer_sheet_with_client(
+        "What happened?",
+        labeled_answer_sheet,
+        1200,
+        Client(),
+    )
+
+    assert "Sales improved. [1.1]" in output
+    assert "[1] [Source: report.md]" in output
