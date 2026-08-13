@@ -1201,3 +1201,8 @@ def get_research_decomposer_llm(config: Config) -> LLMBackend:
 def get_research_synthesizer_llm(config: Config) -> LLMBackend:
     """Research synthesizer LLM — cites retrieved chunks into coherent answer."""
     return _get(config, "research_synthesizer_profile")
+
+
+def get_zako_bunragman_llm(config: Config) -> LLMBackend:
+    """Zako Bunragman LLM — names-only source-group discovery."""
+    return _get(config, "zako_bunragman_profile")

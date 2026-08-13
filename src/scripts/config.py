@@ -86,6 +86,12 @@ class Config:
     research_decomposer_profile: str = "deepseek_v4flash_temp0"   # V4 Flash: cheap, deterministic decomposition
     research_synthesizer_profile: str = "deepseek_v4pro_highalloc" # V4 Pro: frontier reasoning synthesis, generous context
 
+    # ── Zako Bunragman discovery ───────────────────────────────────────
+    zako_source_root: Path = field(
+        default_factory=lambda: _PSOAS_ROOT / "data" / "files_ingested" / "Packs"
+    )
+    zako_bunragman_profile: str = "deepseek_v4pro_highalloc"
+
     # ── Research retrieval parameters ───────────────────────────────
     research_bm25_top_k: int = 5          # chunks retrieved per sub-question
     research_max_chunks: int = 20         # global cap after dedup across sub-questions
