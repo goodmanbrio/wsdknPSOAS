@@ -61,6 +61,23 @@ python src/scripts/PMS2/01_Chunk.py
 python src/psoas.py
 ```
 
+## Windows quick start
+
+For Windows 10/11 x64 laptops, copy the complete project folder to the
+computer's local drive. If you have been supplied an authorized `.env` file,
+place it beside `requirements.txt`; credentials are intentionally excluded
+from GitHub. Install the
+Python 3.14.7 Windows standalone installer (64-bit) from
+<https://www.python.org/downloads/>. Then double-click `Run-PSOAS.cmd`.
+
+The launcher creates a private `.venv`, installs the packages in
+`requirements.txt`, refreshes the local document index, and starts the
+interactive terminal. Internet access is required on the first launch.
+
+Users should not run `Run-PSOAS.ps1` directly or launch PSOAS from the USB
+drive. See `output/pdf/PSOAS_Windows_Installation_Guide.pdf` for the
+step-by-step guide.
+
 The BM25 index for open-ended research is built lazily on the first
 `run_research` call (or pre-build it with `python tests/stress_research.py`).
 
