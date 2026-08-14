@@ -1,0 +1,12 @@
+- We need a priority of work for the next 3 days, what do you want to demo
+- 
+- "FAQs" if assumed to be for streamlining retrievals involves making & storing a persistent directory of previous answers
+- Token counting per term is its own development and requires the tracking of many nested LLM calls
+- Being able to ask more and more qualitative questions makes the system RAG-heavy, which is vulnerable to language changes 
+- Optimizing for qualitative question retrieval (RAG) makes it fragile for retrieving numbers from financial tables, xlsx files, mostly numerical chunks, how much of a priority is this
+  - The assumption I worked off earlier was that the most important thing was airtight numerical data retrieval with citations, number normalization, charting capability, 
+  - But this is a completely separate process from RAG-based research-style retrieval that pulls justification from eg sell side reports & memos
+  - Unless we find the number first, then hand read the chunk for justification
+-  The "context" problem is solvable by RLMs, but the context management between nested RLM instances is going to take time to design consistently
+  - That is, how important is larger context? What is the context for?
+- Resolving fiscal years requires a consistent API/websearch & verification ability

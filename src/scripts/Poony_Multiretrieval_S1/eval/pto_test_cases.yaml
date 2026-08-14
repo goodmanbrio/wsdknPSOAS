@@ -1,0 +1,116 @@
+# pto_test_cases.yaml
+# Test cases for PTO (Poony Tabular Oneshot) retrieval validation.
+#
+# Each case = one PTOBatchRequest + expected values that should appear
+# in the top-k chunk text. Validation: regex search for value string
+# in top chunk texts. PASS if found, FAIL if only in runner-ups or absent.
+#
+# Cases drawn from sekei_test_cases.yaml ground truth.
+
+# ═══════════════════════════════════════════════════════════════
+# e_bby: cross-statement (hardest — 3 different statements)
+# ═══════════════════════════════════════════════════════════════
+
+- id: e_bby_income
+  case_group: e_bby
+  firm: Best Buy
+  period: FY2023
+  statement: income_statement
+  metrics: [Revenue]
+  retrieve_target: Consolidated Statements of Earnings
+  expected_values:
+    Revenue: ["46,298", "46298"]
+  source: BESTBUY_2023_10K.md
+
+- id: e_bby_balance
+  case_group: e_bby
+  firm: Best Buy
+  period: FY2023
+  statement: balance_sheet
+  metrics: [Total Assets]
+  retrieve_target: Consolidated Balance Sheets
+  expected_values:
+    Total Assets: ["15,803", "15803"]
+  source: BESTBUY_2023_10K.md
+
+- id: e_bby_cashflow
+  case_group: e_bby
+  firm: Best Buy
+  period: FY2023
+  statement: cash_flow_statement
+  metrics: [Net Cash from Operations]
+  retrieve_target: Consolidated Statements of Cash Flows
+  expected_values:
+    Net Cash from Operations: ["1,824", "1824"]
+  source: BESTBUY_2023_10K.md
+
+# ═══════════════════════════════════════════════════════════════
+# a_bby: same statement, multi-metric batch (income statement)
+# ═══════════════════════════════════════════════════════════════
+
+- id: a_bby_income
+  case_group: a_bby
+  firm: Best Buy
+  period: FY2023
+  statement: income_statement
+  metrics: [Revenue, Operating Income, Diluted EPS]
+  retrieve_target: Consolidated Statements of Earnings
+  expected_values:
+    Revenue: ["46,298", "46298"]
+    Operating Income: ["1,795", "1795"]
+    Diluted EPS: ["6.29"]
+  source: BESTBUY_2023_10K.md
+
+# ═══════════════════════════════════════════════════════════════
+# d_bby: derived metrics — PTO only retrieves components
+# ═══════════════════════════════════════════════════════════════
+
+- id: d_bby_components
+  case_group: d_bby
+  firm: Best Buy
+  period: FY2023
+  statement: income_statement
+  metrics: [Revenue, Gross Profit, Net Earnings]
+  retrieve_target: Consolidated Statements of Earnings
+  expected_values:
+    Revenue: ["46,298", "46298"]
+    Gross Profit: ["9,912", "9912"]
+    Net Earnings: ["1,419", "1419"]
+  source: BESTBUY_2023_10K.md
+
+# ═══════════════════════════════════════════════════════════════
+# e_amcor: cross-statement (different company, different naming)
+# ═══════════════════════════════════════════════════════════════
+
+- id: e_amcor_income
+  case_group: e_amcor
+  firm: Amcor
+  period: FY2023
+  statement: income_statement
+  metrics: [Net Sales]
+  retrieve_target: Consolidated Statements of Income
+  expected_values:
+    Net Sales: ["14,694", "14694"]
+  source: AMCOR_2023_10K.md
+
+- id: e_amcor_balance
+  case_group: e_amcor
+  firm: Amcor
+  period: FY2023
+  statement: balance_sheet
+  metrics: [Total Assets]
+  retrieve_target: Consolidated Balance Sheets
+  expected_values:
+    Total Assets: ["17,003", "17003"]
+  source: AMCOR_2023_10K.md
+
+- id: e_amcor_cashflow
+  case_group: e_amcor
+  firm: Amcor
+  period: FY2023
+  statement: cash_flow_statement
+  metrics: [Net Cash from Operations]
+  retrieve_target: Consolidated Statements of Cash Flows
+  expected_values:
+    Net Cash from Operations: ["1,261", "1261"]
+  source: AMCOR_2023_10K.md

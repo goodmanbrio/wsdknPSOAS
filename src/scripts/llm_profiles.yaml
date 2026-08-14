@@ -1,0 +1,196 @@
+# LLM profiles — named model configurations.
+# Config.py maps pipeline roles to profile names.
+# To swap a model: change the profile name in config.py.
+# To tweak a model: edit here, zero code changes.
+# API keys resolved from env vars by provider (see PROVIDER_CONFIG in llm.py).
+
+# ── Anthropic ──────────────────────────────────────────────────────────
+anthropic_orchestrator:
+  provider: anthropic
+  model: claude-sonnet-4-6
+  thinking: false
+  max_tokens: 4096
+
+anthropic_hayasui:
+  provider: anthropic
+  model: claude-haiku-4-5-20251001
+  thinking: false
+  max_tokens: 3000
+
+anthropic_sonnetmed:
+  provider: anthropic
+  model: claude-sonnet-4-6
+  thinking: false
+  max_tokens: 3000
+
+anthropic_sonnetmedthink:
+  provider: anthropic
+  model: claude-sonnet-4-6
+  thinking: true
+  thinking_budget: 5000   # ceiling, model uses up to. 5k enough for judge/generation reasoning
+  max_tokens: 8000        # = 5k thinking + 3k answer. thinking tokens bill as output ($15/MTok)
+
+anthropic_opuslow:
+  provider: anthropic
+  model: claude-opus-4-6
+  thinking: false
+  max_tokens: 3000
+
+anthropic_opusmed:
+  provider: anthropic
+  model: claude-opus-4-6
+  thinking: false
+  max_tokens: 3000
+
+anthropic_opusmedthink:
+  provider: anthropic
+  model: claude-opus-4-6
+  thinking: true
+  thinking_budget: 5000   # ceiling, model uses up to. 5k enough for judge/generation reasoning
+  max_tokens: 8000        # = 5k thinking + 3k answer. thinking tokens bill as output ($25/MTok)
+
+anthropic_opushighthink:
+  provider: anthropic
+  model: claude-opus-4-6
+  thinking: true
+  thinking_budget: 10000  # generous — Sekei needs to reason about metric decomposition + batching
+  max_tokens: 14000       # = 10k thinking + 4k answer (stencil JSON can be large)
+
+# ── DeepSeek V4 ───────────────────────────────────────────────────────
+# V4 Pro:  1.6T MoE (49B active), frontier reasoning + tool calling.
+#          $0.435/M in, $0.87/M out. 1M context. MIT licensed.
+# V4 Flash: 284B MoE (13B active), fast + cheap + tool calling.
+#          $0.14/M in, $0.28/M out. 1M context. MIT licensed.
+#
+# Thinking mode: per-request param, NOT a model flag.
+#   Requires llm.py code change to pass extra_body={"thinking":{"type":"enabled"}}
+#   and handle reasoning_content echo-back. Profiles below set thinking: true
+#   as a signal; OpenAICompatibleLLM must read it. Until then, thinking is
+#   silently skipped (model still performs well without it).
+#
+# DEPRECATED: deepseek-chat / deepseek-reasoner retire 2026-07-24 15:59 UTC.
+#   Legacy profiles updated to V4 Flash for backwards compat.
+
+# ── V4 Pro (Opus-tier) ──────────────────────────────────────────────
+
+deepseek_v4pro_orchestrator:
+  provider: deepseek
+  model: deepseek-v4-pro
+  temperature: 0.1
+  thinking: true
+  max_tokens: 8192        # tool-calling agent loop, moderate output per turn
+
+deepseek_v4pro_pteca:
+  provider: deepseek
+  model: deepseek-v4-pro
+  temperature: 0.1
+  thinking: true
+  max_tokens: 4096        # chart planning agent, structured output
+
+deepseek_v4pro_bunragman_sekei:
+  provider: deepseek
+  model: deepseek-v4-pro
+  temperature: 0.1
+  thinking: true
+  max_tokens: 8192        # Bunragman sekei: RECONCILE only — real cross-source synthesis
+
+deepseek_v4pro_bunragman_group:
+  provider: deepseek
+  model: deepseek-v4-pro
+  temperature: 0.1
+  thinking: false         # GROUP is filename classification, not synthesis — no thinking budget
+  max_tokens: 4096         # agentic ask_user loop; small output, headroom for questions/turns
+
+deepseek_v4pro_bunragman_agent:
+  provider: deepseek
+  model: deepseek-v4-pro
+  temperature: 0.1
+  thinking: true
+  max_tokens: 8192        # Bunragman per-source agent: xlsx target selection + summary write
+
+deepseek_v4pro_highalloc:
+  provider: deepseek
+  model: deepseek-v4-pro
+  temperature: 0.1
+  thinking: true
+  max_tokens: 16384       # planning + extraction: generous for stencil JSON, judgment
+
+deepseek_v4pro_highalloc_temp0:
+  provider: deepseek
+  model: deepseek-v4-pro
+  temperature: 0.0
+  thinking: true
+  max_tokens: 16384       # deterministic extraction (judge, dailo)
+
+deepseek_v4pro_med:
+  provider: deepseek
+  model: deepseek-v4-pro
+  temperature: 0.1
+  thinking: true
+  max_tokens: 8192        # moderate roles (gulei chunk selection)
+
+# ── V4 Flash (Sonnet/Haiku-tier) ────────────────────────────────────
+
+deepseek_v4flash:
+  provider: deepseek
+  model: deepseek-v4-flash
+  temperature: 0.1
+  max_tokens: 4096
+
+deepseek_v4flash_temp0:
+  provider: deepseek
+  model: deepseek-v4-flash
+  temperature: 0.0
+  max_tokens: 4096        # HyDE keyword gen, screening: deterministic, fast
+
+deepseek_v4flash_leng:
+  provider: deepseek
+  model: deepseek-v4-flash
+  temperature: 0.0
+  max_tokens: 3000        # PUMBA Leng screening: short yes/no responses
+
+# ── DeepSeek V4 for PMS2 Leng/Validator ──────────────────────────────
+
+deepseek_v4pro_leng:
+  provider: deepseek
+  model: deepseek-v4-pro
+  temperature: 0.0         # deterministic extraction
+  thinking: false           # no thinking for cheap extraction
+  max_tokens: 3000          # Leng output is small (found + cells map)
+
+deepseek_v4pro_validator:
+  provider: deepseek
+  model: deepseek-v4-pro
+  temperature: 0.0
+  thinking: true            # Validator needs judgment (cross-ref chunk vs claim)
+  max_tokens: 5000          # thinking (~2.5k) + verdicts (~800-1.5k). DeepSeek
+                            # thinking tokens count toward max_tokens (unlike
+                            # Anthropic). 4000 risks cutoff on high-cell hits.
+
+deepseek_v4flash_validator:
+  provider: deepseek
+  model: deepseek-v4-flash
+  temperature: 0.0
+  thinking: false
+  max_tokens: 3000
+
+# ── Legacy aliases (updated to V4 Flash — deepseek-chat retires 2026-07-24) ──
+
+deepseek_chattemp0:
+  provider: deepseek
+  model: deepseek-v4-flash   # was deepseek-chat — DEPRECATED
+  temperature: 0.0
+
+deepseek_chattemp01:
+  provider: deepseek
+  model: deepseek-v4-flash   # was deepseek-chat — DEPRECATED
+  temperature: 0.1
+
+# ── OpenAI ─────────────────────────────────────────────────────────────
+# (add profiles when needed)
+
+# ── Kimi / Moonshot ────────────────────────────────────────────────────
+# (add profiles when needed)
+
+# ── Gemini ─────────────────────────────────────────────────────────────
+# (add profiles when needed)

@@ -1,0 +1,21 @@
+# ── PSOAS harness ──────────────────────────────────────────
+anthropic>=0.40.0
+rich>=13.0
+
+# ── PMS1 pipeline (existing deps) ─────────────────────────
+pyyaml>=6.0
+openai>=1.0                   # llm.py OpenAI-compat backend
+llama-index-core>=0.11.0
+llama-index-embeddings-huggingface>=0.3.0
+PyMuPDF>=1.24.0               # fitz — PDF parsing in ingest.py
+
+# ── PMS2 ingest ───────────────────────────────────────────
+docling>=2.0                  # pdf/docx → markdown conversion
+extract-msg>=0.45             # .msg (Outlook email) → markdown conversion
+
+# ── Research (open-ended QA) ──────────────────────────────
+rank-bm25>=0.2.2              # BM25 keyword search over docstore chunks
+
+# ── Charting ───────────────────────────────────────────────
+matplotlib>=3.8
+lovelyplots>=0.0.26

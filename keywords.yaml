@@ -1,0 +1,41 @@
+# keywords.yaml — Doctype inference rules for frontmatter.
+#
+# All matching is case-insensitive.  Patterns are Python regex.
+# Edit this file to tune detection without changing code.
+
+# ── doctype: folder structure → doc type ───────────────────────────────
+# First matching directory in the relative path (from data/) wins.
+doctype_folder_mapping:
+  Company: filing
+  "Research reports": sellside_report
+  Notes: note
+  Model: model
+  Data: dataset
+  Transcripts: transcript
+  Filings: filing
+  Reports: sellside_report
+
+# ── doctype: filename pattern → doc type (fallback after folders) ──────
+doctype_filename_patterns:
+  - pattern: "(?i)\\b10[-]?[KQ]\\b"
+    doctype: filing
+  - pattern: "(?i)\\b20[-]?F\\b"
+    doctype: filing
+  - pattern: "(?i)\\b8[-]?K\\b"
+    doctype: filing
+  - pattern: "(?i)\\bannual[\\s._-]?report\\b"
+    doctype: filing
+  - pattern: "(?i)\\bearnings[\\s._-]?(call|release|presentation|transcript)\\b"
+    doctype: filing
+  - pattern: "(?i)\\binvestor[\\s._-]?(day|presentation|update)\\b"
+    doctype: filing
+  - pattern: "(?i)\\bproxy[\\s._-]?statement\\b"
+    doctype: filing
+  - pattern: "(?i)\\bpress[\\s._-]?release\\b"
+    doctype: filing
+  - pattern: "(?i)\\.xlsx?$|\\.xlsm$"
+    doctype: model
+  - pattern: "(?i)\\.msg$"
+    doctype: email
+  - pattern: "(?i)\\bwrite[\\s-]?up\\b"
+    doctype: sellside_report

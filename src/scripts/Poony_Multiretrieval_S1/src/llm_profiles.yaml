@@ -1,0 +1,71 @@
+# LLM profiles — named model configurations.
+# Config.py maps pipeline roles to profile names.
+# To swap a model: change the profile name in config.py.
+# To tweak a model: edit here, zero code changes.
+# API keys resolved from env vars by provider (see PROVIDER_CONFIG in llm.py).
+
+# ── Anthropic ──────────────────────────────────────────────────────────
+anthropic_hayasui:
+  provider: anthropic
+  model: claude-haiku-4-5-20251001
+  thinking: false
+  max_tokens: 3000
+
+anthropic_sonnetmed:
+  provider: anthropic
+  model: claude-sonnet-4-6
+  thinking: false
+  max_tokens: 3000
+
+anthropic_sonnetmedthink:
+  provider: anthropic
+  model: claude-sonnet-4-6
+  thinking: true
+  thinking_budget: 5000   # ceiling, model uses up to. 5k enough for judge/generation reasoning
+  max_tokens: 8000        # = 5k thinking + 3k answer. thinking tokens bill as output ($15/MTok)
+
+anthropic_opuslow:
+  provider: anthropic
+  model: claude-opus-4-8
+  thinking: false
+  max_tokens: 3000
+
+anthropic_opusmed:
+  provider: anthropic
+  model: claude-opus-4-8
+  thinking: false
+  max_tokens: 3000
+
+anthropic_opusmedthink:
+  provider: anthropic
+  model: claude-opus-4-8
+  thinking: true
+  thinking_budget: 5000   # ceiling, model uses up to. 5k enough for judge/generation reasoning
+  max_tokens: 8000        # = 5k thinking + 3k answer. thinking tokens bill as output ($25/MTok)
+
+anthropic_opushighthink:
+  provider: anthropic
+  model: claude-opus-4-8
+  thinking: true
+  thinking_budget: 10000  # generous — Sekei needs to reason about metric decomposition + batching
+  max_tokens: 14000       # = 10k thinking + 4k answer (stencil JSON can be large)
+
+# ── DeepSeek ───────────────────────────────────────────────────────────
+deepseek_chattemp0:
+  provider: deepseek
+  model: deepseek-chat
+  temperature: 0.0
+
+deepseek_chattemp01:
+  provider: deepseek
+  model: deepseek-chat
+  temperature: 0.1
+
+# ── OpenAI ─────────────────────────────────────────────────────────────
+# (add profiles when needed)
+
+# ── Kimi / Moonshot ────────────────────────────────────────────────────
+# (add profiles when needed)
+
+# ── Gemini ─────────────────────────────────────────────────────────────
+# (add profiles when needed)

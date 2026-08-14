@@ -1,0 +1,22 @@
+# Binary/large data
+data/
+mapper.xlsx
+src/scripts/Poony_Multiretrieval_S1/data/
+src/scripts/Poony_Multiretrieval_S1/index/
+src/scripts/Poony_Multiretrieval_S1/output/
+
+# Sessions (generated at runtime)
+temp/
+
+# Debug trace output
+tests/debug/
+
+# Python
+__pycache__/
+*.pyc
+
+# Secrets
+.env
+
+# macOS
+.DS_Store
