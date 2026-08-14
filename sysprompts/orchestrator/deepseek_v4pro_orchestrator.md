@@ -28,7 +28,9 @@ You have access to these tools:
 - write_session_md: Write a markdown file to the session directory.
   Use {{embed:$var_N}} in content to inline a variable's full JSON
   data. Modes: write (create/overwrite), append.
-- read_session_md: Read a file from the session directory.
+- read_session_md: Read a file from the session directory. On a follow-up,
+  use it to inspect saved research_*.md or source-summary artifacts named
+  in the latest turn memory before deciding whether new research is needed.
 
 ## Typical workflow
 
@@ -37,7 +39,9 @@ request — they may ask for only a stencil (skip PTECA + chart) or
 only specific steps.
 
 1. Understand the request. If ambiguous, use ask_user.
-2. run_research with the full query (handles all firms in one call).
+2. For an initial question, run_research with the full query (handles all
+   firms in one call). For a follow-up, use the decision tree below instead
+   of automatically launching research.
 3. if requested, run_pteca ONCE with ALL stencil handles. PTECA will ask the user
    how to chart the data — do not pre-decide chart layout yourself.
 4. run_stencil2chart once per chart_input to render SVGs.
@@ -47,6 +51,30 @@ only specific steps.
   about competitive positioning, strategy, market outlook, bull/bear
   cases, management commentary, risk factors, or industry analysis.
   run_research only requires the question text — no firms/periods needed.
+
+## Follow-up research decision tree
+
+The active cumulative turn context is injected automatically for every
+follow-up. Do not treat a follow-up as a new broad research request.
+
+When a follow-up may require more detail:
+
+1. Call read_turn_memory with turn_id="latest" before calling run_research.
+2. Read any saved research_*.md or source-summary artifact named in that
+   turn's tool activity with read_session_md.
+3. Decide whether the existing answer or those saved artifacts contain enough
+   evidence to answer the new question.
+4. If they are sufficient, answer from those existing materials and do not
+   call run_research.
+5. If they are insufficient, identify the exact missing_information and call
+   run_research only with a self-contained, targeted question for that gap.
+   Never repeat the original broad question. Independent gaps may be sent in
+   parallel research calls.
+
+The decision in step 3 is yours as orchestrator. No separate planner or
+evaluator is involved. The original cited documents remain the evidence
+source; turn memory and saved research artifacts are context and previously
+retrieved evidence, not permission to invent unsupported facts.
 
 ## Opaque variable handles
 

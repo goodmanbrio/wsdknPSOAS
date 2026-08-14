@@ -90,7 +90,17 @@ TOOL_DEFINITIONS = [
             "outlook?', 'Summarize the bull case for Coherent', or 'How does "
             "Furukawa Electric view the optical fiber market?'. Do NOT use "
             "for tabular data extraction — use run_pms2 for metrics like "
-            "revenue, EPS, margins with specific periods."
+            "revenue, EPS, margins with specific periods. For a follow-up, "
+            "you must first call read_turn_memory with turn_id='latest'. "
+            "Then inspect any saved research artifacts named in that turn's "
+            "tool activity using read_session_md. Decide whether the answer "
+            "or those existing artifacts already contain the requested detail. "
+            "If they do, answer from them without calling run_research. Only "
+            "if the existing artifacts are insufficient should you call "
+            "run_research, and then only for a self-contained, targeted "
+            "missing-information question; do not rerun the whole prior broad "
+            "query. Separate independent missing items into parallel calls "
+            "when useful."
         ),
         "input_schema": {
             "type": "object",
@@ -99,8 +109,18 @@ TOOL_DEFINITIONS = [
                     "type": "string",
                     "description": (
                         "The open-ended question to research. Pass the user's "
-                        "query as-is — the research pipeline handles "
+                        "query as-is for a standalone request. For a follow-up, "
+                        "pass a self-contained rewritten question using the "
+                        "active turn memory. The research pipeline handles "
                         "decomposition internally."
+                    ),
+                },
+                "missing_information": {
+                    "type": "string",
+                    "description": (
+                        "For a follow-up, briefly state the specific evidence "
+                        "gap identified after reading the latest turn memory. "
+                        "Omit this for a standalone first-turn request."
                     ),
                 },
             },
@@ -248,7 +268,10 @@ TOOL_DEFINITIONS = [
         "name": "read_session_md",
         "description": (
             "Read a file from the session directory. Returns the "
-            "file content as a string."
+            "file content as a string. On a follow-up, use this to inspect "
+            "saved research_*.md or source-summary artifacts named in the "
+            "latest turn memory before deciding whether new research is "
+            "necessary."
         ),
         "input_schema": {
             "type": "object",
@@ -261,6 +284,28 @@ TOOL_DEFINITIONS = [
                 },
             },
             "required": ["filename"],
+        },
+    },
+    {
+        "name": "read_turn_memory",
+        "description": (
+            "Read the structured memory page for a completed conversation turn. "
+            "Use turn_id='latest' for the most recent turn, or a numeric id such "
+            "as '1'. On a follow-up, call this before run_research so the "
+            "orchestrator can identify what information is actually missing, "
+            "then inspect any saved research artifacts named in its tool "
+            "activity with read_session_md. Cited original documents remain "
+            "the evidence source."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "turn_id": {
+                    "type": "string",
+                    "description": "'latest' or a turn number such as '1'.",
+                },
+            },
+            "required": ["turn_id"],
         },
     },
 ]

@@ -24,10 +24,18 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 from rich.panel import Panel
 
 from src.harness.terminal_router import register, console, _router, harvest_logs
-from src.harness.execute_tool import execute_tool, set_session_dir, set_debug_dir, reset_counters
+from src.harness.execute_tool import (
+    begin_turn,
+    execute_tool,
+    follow_up_research_is_blocked,
+    reset_counters,
+    set_debug_dir,
+    set_session_dir,
+)
 from src.harness.opaque_registry import registry
 from src.harness.system_prompt import TOOL_DEFINITIONS
 from src.harness.sysprompts import load_sysprompt
+from src.harness.turn_memory import load_active_context, write_turn_memory
 from src.config import Config
 from src.llm import get_orchestrator_llm, LLMResponse, ToolCall
 
@@ -103,11 +111,30 @@ def _dispatch_parallel(tool_calls: list[ToolCall]) -> list[dict]:
     Result format: [{"id": "tc_1", "name": "run_pms1", "content": "..."}]
     """
     results = [None] * len(tool_calls)
+    blocked = follow_up_research_is_blocked()
+    dispatchable: list[tuple[int, ToolCall]] = []
+    for index, tool_call in enumerate(tool_calls):
+        if blocked and tool_call.name == "run_research":
+            results[index] = {
+                "id": tool_call.id,
+                "name": tool_call.name,
+                "content": (
+                    "Error: follow-up research is gated. First call "
+                    "read_turn_memory with turn_id='latest', decide what "
+                    "information is missing, and only then call run_research "
+                    "with a self-contained targeted question."
+                ),
+            }
+        else:
+            dispatchable.append((index, tool_call))
 
-    with ThreadPoolExecutor(max_workers=len(tool_calls)) as pool:
+    if not dispatchable:
+        return results
+
+    with ThreadPoolExecutor(max_workers=len(dispatchable)) as pool:
         future_to_idx = {
-            pool.submit(_safe_execute, tc): i
-            for i, tc in enumerate(tool_calls)
+            pool.submit(_safe_execute, tool_call): index
+            for index, tool_call in dispatchable
         }
         for future in as_completed(future_to_idx):
             idx = future_to_idx[future]
@@ -162,6 +189,7 @@ def run_harness(
 
     messages = []
     transcript_turn = 0
+    memory_turn = 0
     is_first_input = True
 
     # ── Outer REPL (spec 11) ─────────────────────────────────
@@ -184,8 +212,26 @@ def run_harness(
             if user_input.strip().lower() == "exit":
                 break
 
-        # ── Append user message + transcript ──────────────────
+        # ── Append user message + durable follow-up context ────
+        is_follow_up = not is_first_input
+        active_context = (
+            "" if not is_follow_up else load_active_context(session_dir)
+        )
+        if active_context:
+            messages.append({
+                "role": "user",
+                "content": (
+                    f"{active_context}\n\n"
+                    "The next message is the user's new request. Use the memory "
+                    "to resolve follow-up references, but verify new factual "
+                    "claims against the original documents."
+                ),
+            })
         messages.append({"role": "user", "content": user_input})
+
+        turn_tool_calls: list[dict] = []
+        turn_tool_results: list[dict] = []
+        turn_stored_vars: list[tuple] = []
 
         with open(transcript, "a") as f:
             if is_first_input:
@@ -194,6 +240,7 @@ def run_harness(
                 f.write(f"\n## User (follow-up)\n\n{user_input}\n")
 
         is_first_input = False
+        begin_turn(is_follow_up)
         turn_counter = 0
 
         # ── Inner agent loop (spec 02) ────────────────────────
@@ -216,6 +263,16 @@ def run_harness(
                 messages.append(response.to_assistant_message())
                 transcript_turn += 1
                 _dump_turn(transcript, transcript_turn, response, None)
+                memory_turn += 1
+                write_turn_memory(
+                    session_dir,
+                    memory_turn,
+                    user_input,
+                    response.text,
+                    tool_calls=turn_tool_calls,
+                    tool_results=turn_tool_results,
+                    stored_vars=turn_stored_vars,
+                )
                 break  # → outer REPL re-prompts
 
             # ── tool_use ──────────────────────────────────────
@@ -249,7 +306,7 @@ def run_harness(
 
             # Guard rail: max tool calls per turn
             if len(tool_calls) > MAX_TOOL_CALLS_PER_TURN:
-                tool_results_msg = LLMResponse.make_tool_results_message([
+                raw_results = [
                     {
                         "id": tc.id,
                         "name": tc.name,
@@ -260,7 +317,8 @@ def run_harness(
                         ),
                     }
                     for tc in tool_calls
-                ])
+                ]
+                tool_results_msg = LLMResponse.make_tool_results_message(raw_results)
                 console.print(
                     f"[bold red]\\[ERROR][/bold red] "
                     f"Max {MAX_TOOL_CALLS_PER_TURN} tool calls per turn "
@@ -272,9 +330,16 @@ def run_harness(
                     raw_results
                 )
 
+            turn_tool_calls.extend([
+                {"id": tc.id, "name": tc.name, "input": tc.input}
+                for tc in tool_calls
+            ])
+            turn_tool_results.extend(raw_results)
+
             # Harvest streams A + B after dispatch completes
             tool_logs = harvest_logs()
             stored_vars = registry.harvest_recent()
+            turn_stored_vars.extend(stored_vars)
 
             # Accumulate messages
             messages.append(response.to_assistant_message())

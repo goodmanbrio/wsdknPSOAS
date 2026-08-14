@@ -114,6 +114,7 @@ src/
     execute_tool.py            dispatch table
     system_prompt.py           TOOL_DEFINITIONS
     opaque_registry.py         $var_N storage
+    turn_memory.py             durable per-turn follow-up memory
     terminal_router.py         I/O routing
     sysprompts.py              template loader
     trace.py                   debug traces
@@ -153,4 +154,13 @@ data/                          (gitignored)
   files_raw/                   source PDFs/docx
   files_ingested/              converted .md + manifest
   index/                       docstore + file_path_index
+
+temp/sessions/<timestamp>/
+  transcript.md                 full audit log
+  memory/                       turn_NNN.md/.json + active_context.md
 ```
+
+Follow-up turns receive a bounded cumulative turn history automatically; the
+orchestrator must read the latest full turn summary before launching research.
+It must then declare the missing information and launch only a targeted
+research pass for that gap; direct answers do not require a research call.

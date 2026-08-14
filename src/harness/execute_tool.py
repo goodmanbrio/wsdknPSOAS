@@ -26,6 +26,9 @@ from src.config import Config
 # ── Session state (set once per run_harness call) ─────────────────────
 _session_dir: Path | None = None
 _debug_dir: Path | None = None
+_turn_state_lock = threading.Lock()
+_turn_is_follow_up = False
+_turn_memory_read = False
 
 # ── Module-level channels ─────────────────────────────────────────────
 _orchestrator_channel = register("ORCHESTRATOR")
@@ -62,6 +65,33 @@ def set_debug_dir(path: Path) -> None:
     _debug_dir = path
 
 
+def begin_turn(is_follow_up: bool) -> None:
+    """Reset per-outer-turn follow-up gating state."""
+    global _turn_is_follow_up, _turn_memory_read
+    with _turn_state_lock:
+        _turn_is_follow_up = is_follow_up
+        _turn_memory_read = False
+
+
+def mark_turn_memory_read() -> None:
+    """Record that the orchestrator read turn memory in this outer turn."""
+    global _turn_memory_read
+    with _turn_state_lock:
+        _turn_memory_read = True
+
+
+def follow_up_research_is_blocked() -> bool:
+    """Return whether follow-up research still needs the memory preflight."""
+    with _turn_state_lock:
+        return _turn_is_follow_up and not _turn_memory_read
+
+
+def is_follow_up_turn() -> bool:
+    """Return whether the active outer turn is a conversation follow-up."""
+    with _turn_state_lock:
+        return _turn_is_follow_up
+
+
 def reset_counters() -> None:
     """Reset per-session state. Called by run_harness."""
     global _s2c_counter, _config, _debug_dir
@@ -69,6 +99,7 @@ def reset_counters() -> None:
         _s2c_counter = 0
     _config = None
     _debug_dir = None
+    begin_turn(False)
 
 
 # ── Handle resolution ─────────────────────────────────────────────────
@@ -244,6 +275,21 @@ def _exec_read_session_md(params: dict) -> str:
     return target.read_text()
 
 
+def _exec_read_turn_memory(params: dict) -> str:
+    if _session_dir is None:
+        return "Error: no active session."
+
+    from src.harness.turn_memory import read_turn_memory
+
+    try:
+        result = read_turn_memory(_session_dir, params["turn_id"])
+        if str(params["turn_id"]).strip().lower() == "latest":
+            mark_turn_memory_read()
+        return result
+    except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
+        return f"Error reading turn memory: {exc}"
+
+
 def _exec_pms2(params: dict) -> str:
     from src.scripts.PMS2.pms2 import run_pms2_pipeline
 
@@ -290,7 +336,23 @@ def _exec_research(params: dict) -> str:
     if _session_dir is None:
         return "Error: no active session (run_research called outside harness)."
 
+    if follow_up_research_is_blocked():
+        return (
+            "Error: follow-up research is gated. First call "
+            "read_turn_memory with turn_id='latest', decide what information "
+            "is missing, and only then call run_research with a self-contained "
+            "targeted question."
+        )
+
     question = params["question"]
+    missing_information = str(params.get("missing_information", "")).strip()
+    if is_follow_up_turn() and not missing_information:
+        return (
+            "Error: follow-up research requires a missing_information field. "
+            "State the specific evidence gap identified after reading the "
+            "latest turn memory, then provide a self-contained targeted "
+            "question."
+        )
     channel = register("RESEARCH")
 
     answer = run_bunragman_sekei(
@@ -348,6 +410,7 @@ _dispatch: dict[str, Callable] = {
     "inspect_var":       _exec_inspect_var,
     "write_session_md":  _exec_write_session_md,
     "read_session_md":   _exec_read_session_md,
+    "read_turn_memory":  _exec_read_turn_memory,
 }
 
 
