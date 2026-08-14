@@ -1215,11 +1215,6 @@ def get_bunragman_sekei_group_llm(config: Config) -> LLMBackend:
     return _get(config, "bunragman_sekei_group_profile")
 
 
-def get_bunragman_agent_llm(config: Config) -> LLMBackend:
-    """Bunragman per-source agent LLM — xlsx target selection + summary write."""
-    return _get(config, "bunragman_agent_profile")
-
-
 def get_zako_bunragman_llm(config: Config) -> LLMBackend:
     """Zako Bunragman LLM — names-only source-group discovery."""
     return _get(config, "zako_bunragman_profile")

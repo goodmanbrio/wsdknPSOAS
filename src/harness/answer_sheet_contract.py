@@ -13,7 +13,16 @@ from typing import Iterable
 from urllib.parse import quote
 
 
-_UPSTREAM_SOURCE_REFERENCE_RE = re.compile(r"\[Source: [^\]\n]+\]")
+# One-level-deep bracket tolerance: a plain [Source: ...] closes at its
+# first ']' unless that ']' belongs to a single nested [...] pair (e.g. an
+# '[External]' mail-gateway tag riding along in a filename or section) —
+# swallow one whole nested pair as a unit, then keep closing at the first
+# bare ']' after it. Filenames/sections are sanitized before synthesis
+# (see synthesizer.py's _strip_brackets) so this is defense-in-depth, not
+# the primary fix.
+_UPSTREAM_SOURCE_REFERENCE_RE = re.compile(
+    r"\[Source: (?:[^\[\]\n]|\[[^\[\]\n]*\])+\]"
+)
 _SOURCE_FILENAME_SECTION_RE = re.compile(
     r"^(?P<filename>.+?\.[A-Za-z0-9]{1,8})\s+—\s+(?P<section>.+)$"
 )

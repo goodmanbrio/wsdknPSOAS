@@ -101,13 +101,6 @@ deepseek_v4pro_bunragman_group:
   thinking: false         # GROUP is filename classification, not synthesis — no thinking budget
   max_tokens: 4096         # agentic ask_user loop; small output, headroom for questions/turns
 
-deepseek_v4pro_bunragman_agent:
-  provider: deepseek
-  model: deepseek-v4-pro
-  temperature: 0.1
-  thinking: true
-  max_tokens: 8192        # Bunragman per-source agent: xlsx target selection + summary write
-
 deepseek_v4pro_highalloc:
   provider: deepseek
   model: deepseek-v4-pro

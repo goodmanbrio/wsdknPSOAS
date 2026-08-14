@@ -99,7 +99,6 @@ class Config:
     # ── Bunragman LLM role → profile mapping ──────────────────────────
     bunragman_sekei_profile: str = "deepseek_v4pro_bunragman_sekei"  # RECONCILE only
     bunragman_sekei_group_profile: str = "deepseek_v4pro_bunragman_group"  # GROUP only — own role, thinking off
-    bunragman_agent_profile: str = "deepseek_v4pro_bunragman_agent"  # per-source: xlsx target selection + summary write
 
     # ── Chart output ──────────────────────────────────────────────────
     output_dir: Path = field(default_factory=lambda: _PMS1_ROOT / "output")

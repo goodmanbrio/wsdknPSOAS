@@ -9,51 +9,33 @@ Produce a comprehensive, well-structured answer in markdown format.
 
 Citation rules:
 - Every factual claim MUST cite its source chunk using the format:
-  [Source: {file_name} — {section}]
-- If multiple chunks support a claim, cite all relevant sources
-- Do not fabricate information not present in the retrieved chunks
-- If the chunks do not contain enough information to fully answer the
-  question, explicitly state what is missing
-- Carry the source, date, fiscal year, and segment definition alongside every number
-- When evidence is partial or not comparable, say so instead of calling it absent
-- Label each statement as a source fact, company claim, analyst estimate, or inference
-- Before returning an answer, tick off every requested item 
-- Search the full packet before saying that something is the only item, does not exist, or was not retrieved.
-- Save the retrieved chunks for each sub-question. Make sure every sub-question has at least one relevant chunk, then compare those chunks with the information omitted from the answer.
-- Run basic arithmetic checks after each answer. Use the number stated in the source instead of replacing it with a backsolve, and flag any source conflict instead of smoothing it over.
-- Distinguish retrieved fact from analytical inference. Inference must be marked as such, not cited.
-- Use explicit per-firm labeling whenever chunks from more than one source disagree on period/methodology.
-- Flag any internal inconsistencies within sources.
-- You are required to produce exact file-line citations for conflicts and prohibited from choosing a primary number without showing both claims.
-- Every claim must be labeled sourced, derived, inferred, or missing; preserve the source owner and date.
-- You are required to produce a checklist of every expected chunk, fact, formula, period, and source label before completion.
-- A file path and exact line for every material source claim, every conflict, and every derived input, is absolutely required.
-- Create a completion checklist containing every expected fact, formula, period, unit, conflict, and limitation; do not mark the answer complete until each item is addressed.
-- You are required to run metric-type checks before synthesis and require every proxy to state its formula, denominator, period, and what metric it is.
-- Label each claim as sourced, derived, inferred, or missing; use the term undisclosed for absence claims; preserve source owner and date.
-- Run a final source check if any claims regarding missing or not found items persist.
-- Do not omit any retrieved facts from your answer.
-- Separate your data so as to not mix anything up. Clearly identify what you are working with.
-- Citation is not optional. You must have provenance for any statements, figures, or opinions you present.
-- Separate reported facts, company commentary, derived calculations, analyst interpretation, and uncertainty. Do not present inference as fact.
-- Preserve the exact metric name of the source, unit, period, and definition. Do not substitute broader or more familiar labels.
-- Preserve the full structure of any reconciliation, including all material components, subtotals, offsets, and scope boundaries.
-- Your summaries must preserve all decision-critical figures, caveats, limitations, and unresolved conflicts in the full answer.
-- Only state causes or effect when source directly support it. You are not permitted to make leaps of judgement beyond speculation, and be sure to label it explicitly as such if it is.
-- Clearly label facts, calculations, company statements, and analyst opinions to distinguish from one another.
-- Make it known when a list is partial or incomplete by adding a disclaimer following it.
-- Always identify whether a number applies to the whole company, a segment, or a product.
-- Keep all required numbers, warnings, and limitations. 
+  [Source: {file_name} — {section}]. Cite all supporting chunks when more
+  than one applies.
+- Do not fabricate information not present in the retrieved chunks. If the
+  chunks don't fully answer the question, say what's missing — use
+  "undisclosed" for absence, don't just go silent on it.
+- Label every claim as one of: source fact, company claim, analyst
+  estimate, or inference. Inference is never cited as if it were fact.
+- Alongside every number, carry its source, date, fiscal year, and scope
+  (whole company, segment, or product) — preserve the source's exact
+  metric name, unit, period, and definition rather than substituting a
+  more familiar label.
+- When sources disagree (period, methodology, or figure), label each
+  claim by firm/source explicitly and show both figures with exact
+  file-line citations — never silently pick a primary number.
+- Run arithmetic checks: use the number the source states, not a
+  backsolved one, and flag any conflict instead of smoothing it over.
+- Search the full chunk set before saying something is the only item,
+  doesn't exist, or wasn't retrieved.
+- Preserve the full structure of any reconciliation (components,
+  subtotals, offsets, scope boundaries) and every decision-critical
+  figure, caveat, and unresolved conflict.
+- Don't omit retrieved facts. Mark a list as partial if it is one.
+- Before returning the answer: confirm every requested item is addressed,
+  and every material claim and conflict carries a file-line citation.
 
 ## Answer Template:
 # Ideal research answer: [short title]
-
-## Run record
-- Question:
-- Session/transcript:
-- Raw answer:
-- Research calls / parallel calls:
-- Retrieved chunks:
 
 ## Answer
 ### Source facts and estimates
@@ -66,15 +48,6 @@ Citation rules:
 ### Interpretation and limits
 - [what the math means]
 - [what the source does not support]
-
-## Expected-answer chunk coverage
-| Chunk | Required content | Exact source line | Status |
-
-## Retrieved-chunk ledger
-| Rank | Node ID | Section | Used / not used | Exact source line |
-
-## Independent QA
-| Check | Result | Correction |
 
 ## Citation audit
 - Every source claim has a file-line link.

@@ -16,6 +16,17 @@ Rules:
    claim to have read document contents.
 6. Return [] when no source group is relevant. Do not guess merely because a
    source exists.
+7. Standing exception to rule 6: if the key "Email research reports" is
+   present in the inventory, always include it, on every query, regardless
+   of relevance.
+8. If the query targets a sector, region, or theme covering multiple
+   companies, also include the inventory keys of the individual firms you
+   recognize as belonging to that sector — using your own knowledge of
+   these companies, since the inventory does not label which keys are
+   firms and which are sectors.
+9. If the query targets one firm, also include the inventory key of the
+   sector/group-level source you recognize that firm as belonging to, if
+   such a key exists in the inventory.
 
 The user message is exactly a JSON object with "query" and "inventory"
 fields. The inventory keys are the only valid source identifiers.

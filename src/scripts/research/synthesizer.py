@@ -18,6 +18,12 @@ from src.harness.answer_sheet_contract import format_answer_sheet
 from src.harness.sysprompts import load_sysprompt
 
 
+def _strip_brackets(text: str) -> str:
+    """Swap [ ] for ( ) so filename/section metadata can never be mistaken
+    for citation-tag delimiters once it's echoed inside [Source: ...]."""
+    return text.replace("[", "(").replace("]", ")")
+
+
 def synthesize_answer(
     question: str,
     chunks: list,  # list[RetrievedChunk] — imported lazily
@@ -56,10 +62,14 @@ def synthesize_answer(
     # Build chunk context blocks
     chunk_blocks: list[str] = []
     for i, ch in enumerate(chunks):
-        # Build a compact source line
-        source_parts = [f"**Source:** {ch.file_name}"]
+        # Build a compact source line. file_name/section can carry a literal
+        # '[External]' mail-gateway tag (email-ingested sources) — square
+        # brackets there would land inside a [Source: ...] citation and
+        # break format_answer_sheet()'s regex (see answer_sheet_contract.py),
+        # so swap to parens before the model ever sees or echoes them.
+        source_parts = [f"**Source:** {_strip_brackets(ch.file_name)}"]
         if ch.section:
-            source_parts.append(f"Section: {ch.section}")
+            source_parts.append(f"Section: {_strip_brackets(ch.section)}")
         if ch.fiscal_year:
             source_parts.append(f"FY: {ch.fiscal_year}")
         source_line = " | ".join(source_parts)

@@ -53,19 +53,15 @@ def run_research_pipeline(
     from src.scripts.research.retriever import retrieve_for_sub_questions
     from src.scripts.research.synthesizer import synthesize_answer
 
-    channel.print(f"[RESEARCH] Decomposing: {question[:100]}")
-
     # Step 1: Decompose
     try:
         sub_questions = decompose_question(question, config)
     except Exception as exc:
-        channel.print(f"[RESEARCH] Decomposition failed: {exc}")
+        channel.print(f"Decomposition failed: {exc}")
         raise
 
     if not sub_questions:
         return "**Decomposition produced no sub-questions.** Try rephrasing the question."
-
-    channel.print(f"[RESEARCH] Decomposed into {len(sub_questions)} sub-questions")
 
     # Step 2: Retrieve
     try:
@@ -73,19 +69,14 @@ def run_research_pipeline(
             sub_questions, config, file_scope=file_scope
         )
     except FileNotFoundError as exc:
-        channel.print(f"[RESEARCH] Retrieval failed: {exc}")
+        channel.print(f"Retrieval failed: {exc}")
         return (
             f"**Cannot search documents.** {exc}\n\n"
             f"Run `00_Ingest.py` and `01_Chunk.py` to build the document index."
         )
     except Exception as exc:
-        channel.print(f"[RESEARCH] Retrieval failed: {exc}")
+        channel.print(f"Retrieval failed: {exc}")
         raise
-
-    channel.print(
-        f"[RESEARCH] Retrieved {len(chunks)} unique chunks "
-        f"(cap: {config.research_max_chunks})"
-    )
 
     if file_scope:
         from src.scripts.research.retriever import (
@@ -96,12 +87,12 @@ def run_research_pipeline(
         allowed = normalize_file_paths(file_scope, config)
         if not allowed:
             channel.print(
-                "[RESEARCH] Warning: none of the provided file paths "
+                "Warning: none of the provided file paths "
                 "resolve under the ingested-data root."
             )
         elif not (allowed & _get_retriever(config).known_file_paths()):
             channel.print(
-                "[RESEARCH] Warning: none of the provided file paths match "
+                "Warning: none of the provided file paths match "
                 "any ingested document."
             )
 
@@ -113,13 +104,13 @@ def run_research_pipeline(
         )
 
     # Step 3: Synthesize
-    channel.print(f"[RESEARCH] Synthesizing answer from {len(chunks)} chunks...")
+    channel.print(f"Synthesizing answer from {len(chunks)} chunks...")
     try:
         answer = synthesize_answer(question, chunks, config)
     except Exception as exc:
-        channel.print(f"[RESEARCH] Synthesis failed: {exc}")
+        channel.print(f"Synthesis failed: {exc}")
         raise
 
-    channel.print(f"[RESEARCH] Complete — {len(answer)} chars")
+    channel.print(f"Complete — {len(answer)} chars")
 
     return answer
